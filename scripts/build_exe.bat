@@ -29,7 +29,7 @@ echo [3/4] Checking that tkinter is available ...
 echo [4/4] Building DFQ.exe (takes a minute) ...
 "%PY%" -m PyInstaller --noconfirm --clean --onefile --windowed --name DFQ ^
     --paths . --collect-submodules dfq ^
-    --add-data "config.example.yaml;." ^
+    --add-data "%CD%\config.example.yaml;." ^
     --distpath build\dist --workpath build\work --specpath build ^
     scripts\dfq_gui_entry.py || goto :fail
 
