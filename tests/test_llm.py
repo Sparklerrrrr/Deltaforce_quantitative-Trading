@@ -129,4 +129,7 @@ def test_analysis_input_contains_features_but_no_raw_documents(cfg):
     d = json.loads(s)
     assert d["fee_rate"] == 0.13 and d["items"][0]["rule"]["buy_price"] == 3600
     assert d["items"][0]["features"]["pct_rank"] == 0.4 and "warnings" not in d["items"][0]["features"]
-    assert d["opinion_digests"][0]["digest"] == "摘要" and d["source_credibility"][0]["score"] == 0.6
+    ext = d["untrusted_external"]
+    assert "不可信" in ext["_note"]
+    assert ext["opinion_digests"][0]["digest"] == "摘要" and ext["source_credibility"][0]["score"] == 0.6
+    assert "opinion_digests" not in d                       # 外部内容不与可信字段混放

@@ -164,7 +164,7 @@ def test_documents_dedup_and_opinions_get_reference_price(cfg, db, aliases):
     assert intel.add_document(db, "bili", "moligod", "PS12B 我看涨，可以买。") is None    # 重复
     assert intel.add_document(db, "bili", "moligod", "   ") is None
     stats = intel.process_documents(cfg, db, None)
-    assert stats == {"docs": 1, "opinions": 1, "by_llm": 0}
+    assert stats == {"docs": 1, "opinions": 1, "by_llm": 0, "quarantined": 0, "quarantined_titles": []}
     op = db.one("SELECT * FROM opinions")
     assert (op["source_name"], op["direction"], op["ref_price"], op["status"]) == ("moligod", "up", 3900, "open")
     assert intel.process_documents(cfg, db, None)["docs"] == 0                          # 不重复提炼

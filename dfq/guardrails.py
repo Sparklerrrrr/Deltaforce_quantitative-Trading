@@ -89,7 +89,8 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
         if it["action"] == "buy":
             try:
                 buy, sell = float(it["buy_price"]), float(it["sell_price"])
-                if not (buy > 0 and sell > 0):
+                if (isinstance(it["buy_price"], bool) or isinstance(it["sell_price"], bool)
+                        or not (math.isfinite(buy) and math.isfinite(sell) and buy > 0 and sell > 0)):
                     raise ValueError
             except (TypeError, ValueError):
                 g.append("买卖线缺失或非法，降级为观望")
@@ -127,16 +128,23 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
             # 5) 止损线
             stop = it["stop_price"]
             try:
-                stop = int(round(float(stop))) if stop is not None else None
-            except (TypeError, ValueError):
+                stop = int(round(float(stop))) if stop is not None and not isinstance(stop, bool) else None
+            except (TypeError, ValueError, OverflowError):
                 stop = None
             from .rules import stop_line
             default_stop = stop_line(cfg, buy, f.get("window_min"))
+            # 模型只能在 [下限, 规则止损线] 之间挪动止损线：
+            #   不能更紧（高于规则线）——贴着买入价的止损会被日常波动打掉，而每次止损都要白付一遍卖出费；
+            #   也不能远到形同没有止损。
+            floor_stop = min(int(buy * (1 - 3 * stop_pct)), default_stop)
             if stop is None or not (0 < stop < buy):
                 stop = default_stop
-            elif stop < buy * (1 - 3 * stop_pct):
-                g.append(f"止损线 {stop} 过远，收到 {int(buy * (1 - 3 * stop_pct))}")
-                stop = int(buy * (1 - 3 * stop_pct))
+            elif stop > default_stop:
+                g.append(f"止损线 {stop} 比规则止损线 {default_stop} 更紧，收回到 {default_stop}")
+                stop = default_stop
+            elif stop < floor_stop:
+                g.append(f"止损线 {stop} 过远，收到 {floor_stop}")
+                stop = floor_stop
             it.update(buy_price=buy, sell_price=sell, stop_price=stop,
                       exp_net_return=round(fees.net_return(buy, sell, fee), 4),
                       stop_net_return=round(fees.net_return(buy, stop, fee), 4))
@@ -164,8 +172,8 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
         price = it["buy_price"]
         want = it.get("qty")
         try:
-            want = int(want) if want else None
-        except (TypeError, ValueError):
+            want = None if (isinstance(want, bool) or not want) else int(want)
+        except (TypeError, ValueError, OverflowError):
             want = None
         if want is None or want <= 0:
             want = int(share // price)             # 没给数量：平均分配

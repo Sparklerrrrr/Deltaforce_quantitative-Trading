@@ -7,6 +7,7 @@ data/overrides.yaml 并在下次运行时生效；提示词类建议永远只是
 from __future__ import annotations
 
 import json
+import math
 from datetime import timedelta
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import yaml
 from . import llm as L
 from . import review, timeutil
 from .config import OVERRIDE_WHITELIST
+from .untrusted import clean
 
 
 def is_due(cfg, db) -> bool:
@@ -87,19 +89,25 @@ def rule_based_reflection(data: dict) -> dict:
 
 def _clean_suggestions(raw) -> list[dict]:
     out = []
-    for s in raw or []:
+    for s in _as_list(raw):
         if not isinstance(s, dict) or s.get("key") not in OVERRIDE_WHITELIST:
             continue
         try:
             val = float(s.get("suggested"))
+            if isinstance(s.get("suggested"), bool) or not math.isfinite(val):
+                continue
         except (TypeError, ValueError):
             continue
         lo, hi = OVERRIDE_WHITELIST[s["key"]]
         if not (lo <= val <= hi):
             continue
         out.append({"key": s["key"], "current": s.get("current"), "suggested": val,
-                    "reason": str(s.get("reason") or "")[:200]})
+                    "reason": clean(s.get("reason"), 200)})
     return out
+
+
+def _as_list(v) -> list:
+    return v if isinstance(v, list) else []
 
 
 def run(cfg, db, client: L.LLMClient | None = None, days: int | None = None) -> dict:
@@ -110,11 +118,11 @@ def run(cfg, db, client: L.LLMClient | None = None, days: int | None = None) -> 
         try:
             obj = client.chat_json(L.REFLECT_PROMPT, json.dumps(data, ensure_ascii=False, default=str))
             content = {
-                "summary": str(obj.get("summary") or "")[:1000],
-                "mistakes": [str(x)[:300] for x in (obj.get("mistakes") or [])][:10],
+                "summary": clean(obj.get("summary"), 1000),
+                "mistakes": [clean(x, 300) for x in _as_list(obj.get("mistakes"))][:10],
                 "param_suggestions": _clean_suggestions(obj.get("param_suggestions")),
-                "prompt_suggestions": [str(x)[:300] for x in (obj.get("prompt_suggestions") or [])][:10],
-                "watchlist_suggestions": [str(x)[:300] for x in (obj.get("watchlist_suggestions") or [])][:10],
+                "prompt_suggestions": [clean(x, 300) for x in _as_list(obj.get("prompt_suggestions"))][:10],
+                "watchlist_suggestions": [clean(x, 300) for x in _as_list(obj.get("watchlist_suggestions"))][:10],
                 "generated_by": "llm",
             }
             model = client.model

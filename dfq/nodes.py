@@ -106,6 +106,10 @@ class CollectIntel(Node):
         n_hints = intel.hints_to_opinions(db, ctx.now)
         client = None if (ctx.offline or ctx.dry_run) else llm_client(ctx)
         stats = intel.process_documents(cfg, db, client)
+        titles = stats.pop("quarantined_titles", [])
+        if titles:
+            ctx.warn(f"有 {len(titles)} 篇资讯疑似含有操纵模型的指令，已隔离、未参与分析："
+                     + "；".join(titles[:5]) + "。如果是误判，把原文里对模型说话的句子删掉后重新放入即可。")
         ctx["intel_stats"] = {"manual": n_manual, "news": n_news, "hints": n_hints, **stats}
         return ctx["intel_stats"]
 

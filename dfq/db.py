@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS opinions (
 CREATE TABLE IF NOT EXISTS documents (
     id INTEGER PRIMARY KEY AUTOINCREMENT, source_type TEXT NOT NULL, source_name TEXT NOT NULL,
     published_at TEXT, collected_at TEXT NOT NULL, url TEXT, title TEXT, text TEXT,
-    digest TEXT, fingerprint TEXT UNIQUE
+    digest TEXT, fingerprint TEXT UNIQUE,
+    quarantined INTEGER DEFAULT 0, quarantine_reason TEXT   -- 疑似含有操纵模型的指令：隔离，不参与分析
 );
 
 CREATE TABLE IF NOT EXISTS mail_log (
@@ -132,6 +133,10 @@ class DB:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(mail_log)")}
         if "paper" not in cols:
             self.conn.execute("ALTER TABLE mail_log ADD COLUMN paper INTEGER")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(documents)")}
+        if "quarantined" not in cols:
+            self.conn.execute("ALTER TABLE documents ADD COLUMN quarantined INTEGER DEFAULT 0")
+            self.conn.execute("ALTER TABLE documents ADD COLUMN quarantine_reason TEXT")
 
     # ---- 通用 ----
     def execute(self, sql: str, params: Iterable = ()) -> sqlite3.Cursor:

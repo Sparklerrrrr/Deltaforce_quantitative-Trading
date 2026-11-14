@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import llm as L
-from . import timeutil
+from . import timeutil, untrusted
 from .http import HttpError, request_json
 from .ledger import _norm
 from .log import event, get_logger, register_secret
@@ -192,44 +192,76 @@ def heuristic_opinions(text: str, aliases: list[tuple[str, dict]]) -> list[dict]
 
 
 def process_documents(cfg, db, client: L.LLMClient | None = None, limit: int = 12) -> dict:
-    """把还没提炼过的原文变成摘要 + 观点。模型不可用时退回关键词规则。"""
+    """把还没提炼过的原文变成摘要 + 观点。模型不可用时退回关键词规则。
+
+    原文是别人写的，不可信。处理顺序：
+      先筛查 → 疑似在操纵模型的整篇隔离（不给模型看、不产生观点、不进入分析）；
+      其余的包进随机标记后才交给模型；模型返回的内容再逐项校验、清洗。
+    """
     aliases = _alias_table(cfg, db)
     names = {it["name"]: it for _, it in aliases}
     horizon = int(cfg.get("intel.opinion_horizon_days", 3))
-    stats = {"docs": 0, "opinions": 0, "by_llm": 0}
+    stats = {"docs": 0, "opinions": 0, "by_llm": 0, "quarantined": 0, "quarantined_titles": []}
+
+    def quarantine(doc, reasons: list[str]) -> None:
+        why = "、".join(reasons)
+        db.execute("UPDATE documents SET digest=?, quarantined=1, quarantine_reason=? WHERE id=?",
+                   ("（已隔离，未参与分析）", why, doc["id"]))
+        stats["quarantined"] += 1
+        stats["quarantined_titles"].append(
+            f"{untrusted.clean(doc['source_name'], 30)}《{untrusted.clean(doc['title'], 40)}》（{why}）")
+        event(log, logging.WARNING, "资讯疑似含有操纵模型的指令，已隔离", node="collect_intel",
+              doc_id=doc["id"], reasons=why)
+
     for doc in db.query("SELECT * FROM documents WHERE digest IS NULL ORDER BY id LIMIT ?", (limit,)):
         text = doc["text"] or ""
+        meta = f"{doc['source_name'] or ''}\n{doc['title'] or ''}"
+        stats["docs"] += 1
+        hits = untrusted.screen(meta + "\n" + text)
+        if hits:
+            quarantine(doc, hits)
+            continue
+
         digest, ops = None, None
         if client is not None and client.ready:
             try:
+                block, tag = untrusted.wrap(f"信源：{doc['source_name']}\n标题：{doc['title'] or ''}\n\n{text}")
                 obj = client.chat_json(
-                    L.EXTRACT_PROMPT.format(items="\n".join(f"- {n}" for n in names)),
-                    f"信源：{doc['source_name']}\n标题：{doc['title'] or ''}\n\n{text[:12000]}")
-                digest = str(obj.get("digest") or "")[:400]
+                    L.EXTRACT_PROMPT.format(items="\n".join(f"- {n}" for n in names), tag=tag), block)
+                if obj.get("suspicious") is True:
+                    quarantine(doc, ["模型判断其中含有对模型的指令"])
+                    continue
+                digest = untrusted.clean(obj.get("digest"), 400)
+                if untrusted.screen(digest):               # 注入内容被原样带进了摘要：一样隔离
+                    quarantine(doc, ["摘要里出现了对模型的指令"])
+                    continue
                 ops = []
-                for o in obj.get("opinions") or []:
+                for o in (obj.get("opinions") or [])[:20]:
                     if not isinstance(o, dict) or o.get("item") not in names:
-                        continue
+                        continue                           # 只接受关注清单里的品种
                     if o.get("direction") not in ("up", "down"):
                         continue
                     try:
                         h = min(max(int(o.get("horizon_days") or horizon), 1), 14)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         h = horizon
                     ops.append({"item": o["item"], "oid": names[o["item"]]["oid"],
                                 "direction": o["direction"], "horizon_days": h,
-                                "claim": str(o.get("claim") or "")[:80]})
+                                "claim": untrusted.clean(o.get("claim"), 80)})
                 stats["by_llm"] += 1
             except L.LLMError as e:
                 event(log, logging.WARNING, f"观点提取改用关键词规则: {e}", node="collect_intel")
         if ops is None:
             ops = heuristic_opinions(text, aliases)
-            digest = re.sub(r"\s+", " ", text)[:200]
+            for o in ops:
+                o["claim"] = untrusted.clean(o.get("claim"), 80)
+            digest = untrusted.clean(text, 200)
         db.execute("UPDATE documents SET digest=? WHERE id=?", (digest or "（无摘要）", doc["id"]))
-        stats["docs"] += 1
+        seen_pairs = set()
         for o in ops:
-            if o.get("oid") is None:
-                continue
+            if o.get("oid") is None or (o["item"], o["direction"]) in seen_pairs:
+                continue                                   # 同一篇里对同一品种同一方向只记一次
+            seen_pairs.add((o["item"], o["direction"]))
             snap = db.latest_snapshot(o["oid"])
             ref = snap["price"] if snap is not None else None
             fp = _fp("op", str(doc["id"]), o["item"], o["direction"])
@@ -269,7 +301,7 @@ def hints_to_opinions(db, now: datetime | None = None) -> int:
 def recent_digests(db, days: int = 3, limit: int = 12) -> list[dict]:
     since = timeutil.fmt(timeutil.now() - timedelta(days=days))
     rows = db.query("SELECT * FROM documents WHERE collected_at>=? AND digest IS NOT NULL "
-                    "ORDER BY id DESC LIMIT ?", (since, limit))
+                    "AND COALESCE(quarantined,0)=0 ORDER BY id DESC LIMIT ?", (since, limit))
     return [{"source": f"{SOURCE_LABELS.get(r['source_type'], r['source_type'])}/{r['source_name']}",
              "title": r["title"], "date": r["published_at"] or r["collected_at"][:10],
              "digest": r["digest"]} for r in rows]
