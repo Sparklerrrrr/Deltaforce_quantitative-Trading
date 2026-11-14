@@ -230,6 +230,7 @@ def perf(cfg, db, days: int | None = None) -> dict:
     out["open"] = db.one("SELECT COUNT(*) AS c FROM decisions WHERE status='open'")["c"]
     out["plans"] = db.one("SELECT COUNT(DISTINCT plan_id) AS c FROM decisions")["c"]
     out["real"] = ledger.realized_summary(db, cfg.fee)
+    out["paper_book"] = ledger.realized_summary(db, cfg.fee, paper=True)
     out["days"] = days
     return out
 
@@ -267,6 +268,11 @@ def format_perf(p: dict) -> str:
     lines.append(f"真实成交：{real['trades']} 笔，已实现盈亏（扣费后）{real['realized']:+,.0f}")
     for name, pos in real["open"].items():
         lines.append(f"  持仓 {name} ×{pos['qty']}，均价 {pos['avg_cost']:.0f}")
+    pb = p.get("paper_book")
+    if pb and pb["trades"]:
+        lines.append(f"模拟账本（与真实成交完全分开）：{pb['trades']} 笔，已实现盈亏 {pb['realized']:+,.0f}")
+        for name, pos in pb["open"].items():
+            lines.append(f"  模拟持仓 {name} ×{pos['qty']}，均价 {pos['avg_cost']:.0f}")
     lines.append("")
     lines.append("口径说明：模拟盈亏按“参考价触线即成交”计算，偏乐观；到期仍持有的按“当时立刻卖出、扣费”估值，偏悲观。")
     lines.append("真实盈亏以你记账的成交为准。")

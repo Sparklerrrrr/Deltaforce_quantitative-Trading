@@ -60,7 +60,7 @@ def build_body(cfg, plan: dict, *, manual_alerts: list[dict] | None = None,
 
     n = 0
     if sells:
-        L.append("━━ 先卖：持仓挂单 ━━")
+        L.append("━━ 先卖：持仓挂单" + ("（模拟账本里的持仓）" if plan.get("paper") else "") + " ━━")
         for s in sells:
             n += 1
             L.append(f"{n}. 搜索「{_search(cfg, s['name'])}」 卖出价 ≥{s['sell_price']}  数量 {s['qty']}")
@@ -132,6 +132,8 @@ def build_body(cfg, plan: dict, *, manual_alerts: list[dict] | None = None,
         ex, eq, eb, es = "PS12B", 200, 3550, 4300
     L.append(f"例：「买 {ex} {eq} {eb}」「卖 {ex} {eq} {es}」（回复时不要带引号）")
     L.append("不回复 = 视为没执行。")
+    if plan.get("paper"):
+        L.append("这是模拟计划：回复它的成交只记入模拟账本，不影响真实持仓、余额和真实盈亏。")
     L.append("")
 
     if receipts:

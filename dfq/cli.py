@@ -136,6 +136,8 @@ def cmd_status(args) -> int:
                          if bal["known"] else "未填写（python -m dfq balance set 金额）"))
     for name, p in ledger.open_positions(db, cfg.fee).items():
         _print(f"  持仓 {name} ×{p['qty']}　均价 {p['avg_cost']:.0f}")
+    for name, p in ledger.open_positions(db, cfg.fee, paper=True).items():
+        _print(f"  模拟持仓 {name} ×{p['qty']}　均价 {p['avg_cost']:.0f}　（模拟账本，不计入真实持仓和余额）")
     pend = db.one("SELECT COUNT(*) AS c FROM reflections WHERE status='pending'")["c"]
     if pend:
         _print("", f"有 {pend} 条反思建议待确认：python -m dfq reflect list")
@@ -176,9 +178,12 @@ def cmd_trade(args) -> int:
         return 2
     _print(f"已记账 #{tid}：{'买' if args.side == 'buy' else '卖'} {item['name']} ×{args.qty} @{args.price:.0f}"
            + ("（模拟）" if args.paper else ""))
-    pos = ledger.open_positions(db, cfg.fee).get(item["name"])
+    pos = ledger.open_positions(db, cfg.fee, paper=args.paper).get(item["name"])
     if pos:
-        _print(f"当前持仓 ×{pos['qty']}，均价 {pos['avg_cost']:.0f}")
+        _print(f"当前{'模拟' if args.paper else ''}持仓 ×{pos['qty']}，均价 {pos['avg_cost']:.0f}")
+    if cfg.paper and not args.paper:
+        _print("注意：现在是模拟模式（paper_mode），但这笔记进了真实账本。如果它只是模拟成交，"
+               "请删掉重记并加 --paper。")
     return 0
 
 
@@ -209,12 +214,15 @@ def cmd_mail_poll(args) -> int:
     except MailError as e:
         _print(f"读取邮件失败：{e}")
         return 1
-    _print(f"检查 {res['checked']} 封，忽略 {res['ignored']} 封，记账 {len(res['recorded'])} 笔，"
-           f"没看懂 {len(res['errors'])} 处")
-    _print(*[f"  ✓ {r}" for r in res["recorded"]], *[f"  ✗ {e}" for e in res["errors"]])
+    _print(f"检查 {res['checked']} 封，忽略 {res['ignored']} 封；记入真实账本 {res['real_recorded']} 笔、"
+           f"模拟账本 {res['paper_recorded']} 笔；没看懂 {len(res['errors'])} 处；"
+           f"未通过校验 {len(res['rejected'])} 封" + ("（dry-run：以上都没有真的写入）" if args.dry_run else ""))
+    _print(*[f"  ✓ {r}" for r in res["recorded"]], *[f"  ✗ {e}" for e in res["errors"]],
+           *[f"  ⊘ {x}" for x in poll.describe_rejections(res["rejected"])])
     # 持仓变了：把 moligod 上对应品种的低于线在“买入线/止损线”之间切换
     p = planmod.load_latest(cfg)
-    if res["recorded"] and not args.dry_run and cfg.get("moligod.enabled") and p and not guardrails.is_expired(p):
+    changed = res["paper_recorded"] if cfg.paper else res["real_recorded"]     # 只有当前模式那本账变了才需要改提醒
+    if changed and not args.dry_run and cfg.get("moligod.enabled") and p and not guardrails.is_expired(p):
         state = guardrails.portfolio_state(cfg, db)
         p["sells"] = guardrails.build_sells(cfg, state, p["items"])
         sync = moligod.sync(cfg, db, moligod.desired_alerts(cfg, p))

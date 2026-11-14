@@ -17,12 +17,15 @@ def test_watch_costs_two_requests_and_dedups_alerts(cfg, db, tmp_path):
 
 def test_watch_flags_position_below_stop(cfg, db, tmp_path):
     cfg.set("watch.move_pct", 99.0)
+    cfg.set("general.paper_mode", False)                   # 实盘模式看真实账本
     client = X.XtcClient(cfg, db, "T-123456", transport=MockXtcTransport())
     row = next(i for i in (X.parse_list_item(d) for d in client.list_all("子弹", "全部")) if i["name"] == "12.7x55mm PS12B")
     ledger.record_trade(db, "buy", {"name": row["name"], "oid": row["oid"]}, 100, row["price"] * 1.5)
     timeutil.set_now("2026-11-13 22:30:00")
     res = watch.check(cfg, db, client, FileTransport(tmp_path), dry_run=True)
     assert any("止损线" in a and "PS12B" in a for a in res["alerts"]) and res["sent"] == 0
+    cfg.set("general.paper_mode", True)                    # 模拟模式下，真实持仓不会触发模拟的提醒
+    assert not any("止损线" in a for a in watch.check(cfg, db, client, FileTransport(tmp_path), dry_run=True)["alerts"])
 
 
 def test_funds_official_is_stub_and_falls_back(cfg, db):

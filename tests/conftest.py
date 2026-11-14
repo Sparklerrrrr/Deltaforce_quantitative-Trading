@@ -5,6 +5,7 @@
 需要“网络”的测试一律注入假的 transport。
 """
 import copy
+import logging
 import os
 import urllib.request
 
@@ -26,6 +27,11 @@ def _no_network_no_secrets(monkeypatch):
     timeutil.set_now("2026-11-13 21:30:00")
     yield
     timeutil.set_now(None)
+    lg = logging.getLogger("dfq")              # 摘掉测试里挂上的日志文件，避免写到已删除的临时目录
+    for h in list(lg.handlers):
+        h.close()
+        lg.removeHandler(h)
+    lg.propagate = True
 
 
 @pytest.fixture

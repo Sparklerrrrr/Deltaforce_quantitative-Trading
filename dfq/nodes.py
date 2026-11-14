@@ -53,9 +53,12 @@ class MailPoll(Node):
     def run(self, ctx):
         if not ctx.cfg.get("mail.enabled") and not (ctx.cfg.data_dir / "inbox").exists():
             raise NodeSkip("邮件未启用")
+        if not ctx.cfg.get("mail.owner_address"):
+            raise NodeSkip("未配置 mail.owner_address")
         res = mailpoll.poll(ctx.cfg, ctx.db, mail_transport(ctx), dry_run=ctx.dry_run)
         ctx["mail_result"] = res
-        return {"recorded": len(res["recorded"]), "errors": len(res["errors"])}
+        return {"real": res["real_recorded"], "paper": res["paper_recorded"],
+                "errors": len(res["errors"]), "rejected": len(res["rejected"])}
 
 
 @register
@@ -327,6 +330,8 @@ class Notify(Node):
             mr = ctx.get("mail_result")
             if mr and mr["errors"]:
                 receipts += [f"没看懂的回复：{e}" for e in mr["errors"]]
+            if mr and mr.get("rejected"):
+                receipts += [f"未记账的来信：{x}" for x in mailpoll.describe_rejections(mr["rejected"])]
             subject = compose.build_subject(cfg, plan)
             cs = ctx.get("collect_stats")
             if cs is None or cs.get("limit_hit"):
@@ -337,11 +342,13 @@ class Notify(Node):
                                       system_lines=self._system_lines(ctx))
             headers = {"X-DFQ-Plan": plan["plan_id"]}
         mid = transport.send(subject, body, to=owner, headers=headers)
-        ctx.db.execute("INSERT OR IGNORE INTO mail_log(message_id,direction,subject,ts,status,plan_id) "
-                       "VALUES(?,?,?,?,?,?)",
+        # 记下这封计划邮件属于“模拟”还是“真实”：日后回复它的成交记哪本账，只以这里为准
+        ctx.db.execute("INSERT OR IGNORE INTO mail_log(message_id,direction,subject,ts,status,plan_id,paper) "
+                       "VALUES(?,?,?,?,?,?,?)",
                        (mid, "out", subject[:300], timeutil.fmt(timeutil.now()),
                         "file" if isinstance(transport, FileTransport) else "sent",
-                        plan["plan_id"] if plan else None))
+                        plan["plan_id"] if plan else None,
+                        (1 if plan["paper"] else 0) if plan else None))
         ctx["notified"] = {"subject": subject, "body": body, "via": transport.name}
         if isinstance(transport, FileTransport) and not (ctx.dry_run or ctx.mock):
             ctx.warn("邮件未启用（mail.enabled: false），计划只写到了 data/outbox/latest.txt。")

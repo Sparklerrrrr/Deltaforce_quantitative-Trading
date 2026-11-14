@@ -1,11 +1,17 @@
 """记账：成交、持仓、资金。
 
+两本账，互不影响：
+  真实账本（paper=False）：你在游戏里真的成交了的。风控、真实余额、真实盈亏只看这一本。
+  模拟账本（paper=True） ：模拟计划（paper_mode）下回复的成交。只用于模拟模式下的计划和复盘。
+所有查询函数都必须显式指明看哪一本（默认真实），任何一处都不会把两本账混在一起算。
+
 - 成交来自两处：邮件回复（mail-poll）和命令行（python -m dfq trade ...）。
 - 持仓 = 所有真实成交按“移动加权平均成本”累计出来的结果。
 - 资金 = 你手动填的余额基准 + 基准之后的成交推算（卖出按扣费后到手计）。
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 
@@ -83,12 +89,19 @@ def record_trade(db, side: str, item: dict, qty: int, price: float, *, source: s
                  paper: bool = False, note: str | None = None) -> int:
     if side not in ("buy", "sell"):
         raise LedgerError("方向只能是 buy 或 sell")
-    if qty <= 0 or price <= 0:
-        raise LedgerError("数量和价格必须为正数")
-    if side == "sell" and not paper:
-        held = positions(db).get(item["name"], {}).get("qty", 0)
+    if isinstance(qty, bool) or isinstance(price, bool):
+        raise LedgerError("数量和价格必须是数字")
+    try:
+        ok = math.isfinite(float(qty)) and math.isfinite(float(price)) and float(qty) == int(qty)
+    except (TypeError, ValueError, OverflowError):
+        ok = False
+    if not ok or qty <= 0 or price <= 0:
+        raise LedgerError("数量必须是正整数，价格必须是正数")
+    if side == "sell":
+        held = positions(db, paper=paper).get(item["name"], {}).get("qty", 0)   # 只和同一本账比
         if qty > held:
-            note = (note + "；" if note else "") + f"卖出数量 {qty} 超过账面持仓 {held}（可能有未记账的买入）"
+            book = "模拟" if paper else "账面"
+            note = (note + "；" if note else "") + f"卖出数量 {qty} 超过{book}持仓 {held}（可能有未记账的买入）"
     cur = db.execute(
         "INSERT INTO trades(ts,side,oid,name,qty,price,source,message_id,paper,note) "
         "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -97,10 +110,10 @@ def record_trade(db, side: str, item: dict, qty: int, price: float, *, source: s
     return cur.lastrowid
 
 
-def positions(db, fee: float = fees.DEFAULT_FEE) -> dict[str, dict]:
-    """真实持仓：{名称: {oid, qty, avg_cost, realized}}。只统计非模拟成交。"""
+def positions(db, fee: float = fees.DEFAULT_FEE, *, paper: bool = False) -> dict[str, dict]:
+    """某一本账的持仓：{名称: {oid, qty, avg_cost, realized}}。默认真实账本。"""
     pos: dict[str, dict] = {}
-    for r in db.query("SELECT * FROM trades WHERE paper=0 ORDER BY ts, id"):
+    for r in db.query("SELECT * FROM trades WHERE paper=? ORDER BY ts, id", (1 if paper else 0,)):
         p = pos.setdefault(r["name"], {"oid": r["oid"], "qty": 0, "avg_cost": 0.0, "realized": 0.0,
                                        "last_buy_at": None})
         if r["side"] == "buy":
@@ -119,23 +132,28 @@ def positions(db, fee: float = fees.DEFAULT_FEE) -> dict[str, dict]:
     return pos
 
 
-def open_positions(db, fee: float = fees.DEFAULT_FEE) -> dict[str, dict]:
-    return {k: v for k, v in positions(db, fee).items() if v["qty"] > 0}
+def open_positions(db, fee: float = fees.DEFAULT_FEE, *, paper: bool = False) -> dict[str, dict]:
+    return {k: v for k, v in positions(db, fee, paper=paper).items() if v["qty"] > 0}
 
 
 def set_balance(db, amount: float) -> None:
-    if amount < 0:
-        raise LedgerError("余额不能为负")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount < 0:
+        raise LedgerError("余额必须是不小于 0 的有限数字")
     db.kv_set("balance_base", {"amount": float(amount), "ts": timeutil.fmt(timeutil.now())})
 
 
-def balance(db, fee: float = fees.DEFAULT_FEE) -> dict:
-    """返回 {known, amount, base, base_ts}。amount = 基准 + 基准之后成交的现金流。"""
+def balance(db, fee: float = fees.DEFAULT_FEE, *, paper: bool = False) -> dict:
+    """返回 {known, amount, base, base_ts}。amount = 基准 + 基准之后“该账本”成交的现金流。
+
+    paper=False：真实余额，只算真实成交 —— 模拟成交永远不会改变它。
+    paper=True ：模拟资金，从同一个基准出发，只算模拟成交。
+    """
     base = db.kv_get("balance_base")
     if not base:
         return {"known": False, "amount": None, "base": None, "base_ts": None}
     amount = float(base["amount"])
-    for r in db.query("SELECT * FROM trades WHERE paper=0 AND ts>? ORDER BY ts", (base["ts"],)):
+    for r in db.query("SELECT * FROM trades WHERE paper=? AND ts>? ORDER BY ts",
+                      (1 if paper else 0, base["ts"])):
         if r["side"] == "buy":
             amount -= r["price"] * r["qty"]
         else:
@@ -143,15 +161,15 @@ def balance(db, fee: float = fees.DEFAULT_FEE) -> dict:
     return {"known": True, "amount": amount, "base": float(base["amount"]), "base_ts": base["ts"]}
 
 
-def spent_today(db) -> float:
+def spent_today(db, *, paper: bool = False) -> float:
     day = timeutil.day_str(timeutil.now())
     row = db.one("SELECT COALESCE(SUM(price*qty),0) AS s FROM trades "
-                 "WHERE paper=0 AND side='buy' AND substr(ts,1,10)=?", (day,))
+                 "WHERE paper=? AND side='buy' AND substr(ts,1,10)=?", (1 if paper else 0, day))
     return float(row["s"])
 
 
-def realized_summary(db, fee: float = fees.DEFAULT_FEE) -> dict:
-    pos = positions(db, fee)
-    n = db.one("SELECT COUNT(*) AS c FROM trades WHERE paper=0")["c"]
+def realized_summary(db, fee: float = fees.DEFAULT_FEE, *, paper: bool = False) -> dict:
+    pos = positions(db, fee, paper=paper)
+    n = db.one("SELECT COUNT(*) AS c FROM trades WHERE paper=?", (1 if paper else 0,))["c"]
     return {"trades": n, "realized": sum(p["realized"] for p in pos.values()),
             "open": {k: v for k, v in pos.items() if v["qty"] > 0}}

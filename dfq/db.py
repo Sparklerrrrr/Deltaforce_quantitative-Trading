@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE TABLE IF NOT EXISTS mail_log (
     message_id TEXT PRIMARY KEY, direction TEXT NOT NULL, subject TEXT, ts TEXT NOT NULL,
-    status TEXT, plan_id TEXT, note TEXT
+    status TEXT, plan_id TEXT, note TEXT,
+    paper INTEGER           -- 发出的邮件对应的计划是模拟(1)还是真实(0)；NULL = 不对应任何计划
 );
 
 CREATE TABLE IF NOT EXISTS moligod_alerts (
@@ -123,7 +124,14 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """给旧数据库补上后来新增的列（只增不改，可重复执行）。"""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(mail_log)")}
+        if "paper" not in cols:
+            self.conn.execute("ALTER TABLE mail_log ADD COLUMN paper INTEGER")
 
     # ---- 通用 ----
     def execute(self, sql: str, params: Iterable = ()) -> sqlite3.Cursor:

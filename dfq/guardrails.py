@@ -18,12 +18,18 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def portfolio_state(cfg, db) -> dict:
-    """当前资金与持仓（真实成交口径）。余额未知时用 risk.assumed_capital 估算。"""
+def portfolio_state(cfg, db, paper: bool | None = None) -> dict:
+    """当前资金与持仓。余额未知时用 risk.assumed_capital 估算。
+
+    看哪本账由计划的性质决定（默认取 general.paper_mode）：
+      真实计划 → 只看真实账本：模拟成交绝不会进入真实计划的风控；
+      模拟计划 → 只看模拟账本：真实持仓也不会混进模拟计划。
+    """
     from . import ledger
+    paper = cfg.paper if paper is None else bool(paper)
     fee = cfg.fee
-    bal = ledger.balance(db, fee)
-    pos = ledger.open_positions(db, fee)
+    bal = ledger.balance(db, fee, paper=paper)
+    pos = ledger.open_positions(db, fee, paper=paper)
     pos_value = 0.0
     for name, p in pos.items():
         snap = db.latest_snapshot(p["oid"]) if p.get("oid") else None
@@ -34,8 +40,7 @@ def portfolio_state(cfg, db) -> dict:
     cash = bal["amount"] if bal["known"] else float(cfg.get("risk.assumed_capital"))
     return {"cash": max(cash, 0.0), "cash_known": bal["known"], "positions": pos,
             "positions_value": pos_value, "equity": max(cash, 0.0) + pos_value,
-            "spent_today": ledger.spent_today(db)}
-
+            "spent_today": ledger.spent_today(db, paper=paper), "paper": paper}
 
 def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, dict],
           state: dict, now: datetime | None = None, valid_until: datetime | None = None) -> dict:

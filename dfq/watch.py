@@ -25,7 +25,7 @@ def check(cfg, db, client: X.XtcClient, transport, *, dry_run: bool = False) -> 
             it = X.parse_list_item(d)
             if it and it["name"].lower() in names:
                 seen[it["name"]] = it
-    pos = ledger.open_positions(db, cfg.fee)
+    pos = ledger.open_positions(db, cfg.fee, paper=cfg.paper)
     alerts = []
     for name, it in seen.items():
         if it["bl"] is not None and abs(it["bl"]) >= move:

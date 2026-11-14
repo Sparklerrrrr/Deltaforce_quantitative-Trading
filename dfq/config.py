@@ -128,7 +128,11 @@ DEFAULTS: dict[str, Any] = {
         "imap_port": 993,
         "imap_user": "",
         "imap_folder": "INBOX",
-        "require_thread_match": True,
+        "auth": {
+            # 你的邮箱服务商写在 Authentication-Results 邮件头开头的标识。留空 = 不采信任何验证结果
+            # = 邮件回复一律不记账（只能用命令行记账）。用 mail-poll --dry-run 查看实际标识。
+            "trusted_authserv": [],
+        },
         "confirm_success": False,
         "poll_lookback_days": 3,
     },

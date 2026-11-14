@@ -44,6 +44,9 @@ def test_log_files_never_contain_token(tmp_path, monkeypatch):
     for h in logging.getLogger("dfq").handlers:
         h.flush()
     text = "".join(p.read_text(encoding="utf-8") for p in tmp_path.glob("*.jsonl"))
+    for h in list(logging.getLogger("dfq").handlers):
+        h.close()
+        logging.getLogger("dfq").removeHandler(h)
     assert text and TOKEN not in text
     for line in text.splitlines():
         json.loads(line)                         # 每行都是合法 JSON

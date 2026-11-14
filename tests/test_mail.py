@@ -27,18 +27,26 @@ class FakeTransport(MailTransport):
         return list(self.inbox)
 
 
-def inbound(text, *, mid="<r1@x>", frm=OWNER, reply_to="<plan-1@dfq>", date=datetime(2026, 11, 13, 12, 0)):
+AUTH_OK = ["mx.example.com; spf=pass smtp.mailfrom=me@example.com; dkim=pass header.d=example.com; "
+           "dmarc=pass header.from=example.com"]
+
+
+def inbound(text, *, mid="<r1@x>", frm=OWNER, reply_to="<plan-1@dfq>", date=datetime(2026, 11, 13, 12, 0),
+            auth=AUTH_OK, from_count=1):
     return InboundMail(message_id=mid, from_addr=frm, subject="Re: 计划", date=date, text=text,
-                       in_reply_to=reply_to, references=[reply_to] if reply_to else [])
+                       in_reply_to=reply_to, references=[reply_to] if reply_to else [],
+                       auth_results=list(auth or []), from_count=from_count)
 
 
 @pytest.fixture
 def setup(cfg, db):
+    """一份“真实”计划邮件 <plan-1@dfq> 已发出；邮箱服务商的验证标识是 mx.example.com。"""
     cfg.set("mail.owner_address", OWNER)
+    cfg.set("mail.auth.trusted_authserv", ["mx.example.com"])
     for oid, name in ((626, "12.7x55mm PS12B"), (640, "5.7x28mm SS190")):
         db.upsert_item(oid, name, 5, 0)
-    db.execute("INSERT INTO mail_log(message_id,direction,subject,ts,status) VALUES('<plan-1@dfq>','out','计划',?, 'sent')",
-               (timeutil.fmt(timeutil.now()),))
+    db.execute("INSERT INTO mail_log(message_id,direction,subject,ts,status,plan_id,paper) "
+               "VALUES('<plan-1@dfq>','out','计划',?,'sent','20261113-2130',0)", (timeutil.fmt(timeutil.now()),))
     return cfg, db
 
 
@@ -63,15 +71,24 @@ def test_other_senders_are_ignored_completely(setup):
     assert trades(db) == [] and res["ignored"] == 2 and t.sent == []            # 不记账，也不回信
 
 
-def test_spoofed_sender_without_thread_reference_is_ignored(setup):
-    """只伪造发件人地址还不够：必须是对本系统发出的邮件的回复。"""
+def test_verified_mail_that_is_not_a_reply_to_a_plan_is_refused_with_explanation(setup):
+    """身份没问题，但对不上任何计划邮件：不知道该记哪本账 → 不记，并回信说明。"""
     cfg, db = setup
     t = FakeTransport([inbound("买 PS12B 200 3550", reply_to=""),
                        inbound("买 PS12B 200 3550", mid="<r2@x>", reply_to="<not-ours@x>")])
-    assert poll.poll(cfg, db, t)["ignored"] == 2 and trades(db) == []
-    cfg.set("mail.require_thread_match", False)                                  # 可以关掉，但默认开
+    res = poll.poll(cfg, db, t)
+    assert trades(db) == [] and len(res["rejected"]) == 2 and len(t.sent) == 2
+    assert "没有记账" in t.sent[0]["body"] and "python -m dfq trade" in t.sent[0]["body"]
     poll.poll(cfg, db, t)
-    assert len(trades(db)) == 2
+    assert len(t.sent) == 2 and trades(db) == []                                 # 不重复回信
+
+
+def test_unrelated_self_mail_is_left_alone(setup):
+    """你发给自己的普通邮件（不含成交）：不记账、不回信、不打扰。"""
+    cfg, db = setup
+    t = FakeTransport([inbound("明天记得交水电费", reply_to="")])
+    res = poll.poll(cfg, db, t)
+    assert trades(db) == [] and t.sent == [] and res["rejected"] == []
 
 
 def test_same_mail_is_processed_once(setup):

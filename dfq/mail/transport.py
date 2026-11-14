@@ -11,13 +11,14 @@ import email.policy
 import html
 import imaplib
 import re
+import secrets
 import smtplib
 import ssl
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid, parseaddr, parsedate_to_datetime
+from email.utils import formatdate, getaddresses, make_msgid, parsedate_to_datetime
 from pathlib import Path
 
 from .. import timeutil
@@ -36,6 +37,8 @@ class InboundMail:
     text: str
     in_reply_to: str = ""
     references: list[str] = field(default_factory=list)
+    auth_results: list[str] = field(default_factory=list)   # 原始 Authentication-Results 头（自上而下）
+    from_count: int = 1                                     # From 头里一共有几个地址；不是 1 就可疑
 
 
 def build_message(subject: str, body: str, *, sender: str, to: str, in_reply_to: str | None = None,
@@ -46,7 +49,8 @@ def build_message(subject: str, body: str, *, sender: str, to: str, in_reply_to:
     msg["To"] = to
     msg["Date"] = formatdate(localtime=True)
     domain = sender.split("@")[-1] if "@" in sender else "dfq.local"
-    msg["Message-ID"] = make_msgid(domain=domain)
+    # 邮件编号里放 128 位随机数：回复时带回的这个编号是“回的确实是我发的那封”的凭据之一，必须猜不出来
+    msg["Message-ID"] = make_msgid(idstring=secrets.token_hex(16), domain=domain)
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = in_reply_to
@@ -97,12 +101,19 @@ def to_inbound(msg) -> InboundMail:
     except (TypeError, ValueError):
         pass
     refs = re.findall(r"<[^>]+>", str(msg.get("References", "")))
+    # 多个 From 头 / 一个 From 里多个地址，是伪造邮件的常见手法：
+    # 服务商验证的可能是其中一个，而我们读到的是另一个。数清楚，交给上层拒绝。
+    from_headers = [str(h) for h in (msg.get_all("From") or [])]
+    from_addrs = [a for _, a in getaddresses(from_headers) if a]
+    irt = re.findall(r"<[^>]+>", str(msg.get("In-Reply-To", "")))
     return InboundMail(
         message_id=str(msg.get("Message-ID", "")).strip(),
-        from_addr=parseaddr(str(msg.get("From", "")))[1].lower(),
+        from_addr=from_addrs[0].lower() if from_addrs else "",
         subject=str(msg.get("Subject", "")),
         date=date, text=extract_text(msg),
-        in_reply_to=str(msg.get("In-Reply-To", "")).strip(), references=refs)
+        in_reply_to=irt[0] if irt else "", references=refs,
+        auth_results=[str(h) for h in (msg.get_all("Authentication-Results") or [])],
+        from_count=len(from_addrs) if len(from_headers) <= 1 else max(len(from_addrs), 2))
 
 
 class MailTransport(ABC):
