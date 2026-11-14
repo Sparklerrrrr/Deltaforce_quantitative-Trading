@@ -184,15 +184,29 @@ def test_reflection_accept_writes_whitelisted_overrides_only(cfg, db, tmp_path):
     assert "已经是" in reflect.decide(cfg, db, res["id"], accept=True)  # 不能重复确认
 
 
-def test_overrides_file_cannot_change_non_whitelisted_settings(tmp_path):
+def test_overrides_file_applies_whitelisted_values(tmp_path):
     (tmp_path / "config.yaml").write_text("general:\n  data_dir: data\n", encoding="utf-8")
     (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "overrides.yaml").write_text(
-        "rules:\n  buy_quantile: 0.2\n  stop_pct: 5\ngeneral:\n  paper_mode: false\nrisk:\n  max_position_pct: 1\n",
-        encoding="utf-8")
+    (tmp_path / "data" / "overrides.yaml").write_text("rules:\n  buy_quantile: 0.2\nfeatures:\n  window_days: 5\n",
+                                                      encoding="utf-8")
     cfg = load_config(tmp_path / "config.yaml")
-    assert cfg.get("rules.buy_quantile") == 0.2
-    assert cfg.get("rules.stop_pct") == 0.10 and cfg.paper is True and cfg.get("risk.max_position_pct") == 0.25
+    assert cfg.get("rules.buy_quantile") == 0.2 and cfg.get("features.window_days") == 5
+
+
+@pytest.mark.parametrize("body,expect", [
+    ("general:\n  paper_mode: false\n", "general.paper_mode 不允许通过这个文件修改"),   # 不能借它切到实盘
+    ("risk:\n  max_position_pct: 1\n", "risk.max_position_pct 不允许"),               # 不能借它放开风控
+    ("rules:\n  stop_pct: 5\n", "rules.stop_pct 应在"),                              # 白名单内但超范围
+    ("rules:\n  buy_quantile: abc\n", "应为数字"),
+    ("- 1\n- 2\n", "必须是键值对"),
+])
+def test_overrides_file_with_anything_else_refuses_to_run(tmp_path, body, expect):
+    """被篡改或写坏的 overrides.yaml 不会被“悄悄忽略”，而是明确报错、拒绝运行。"""
+    (tmp_path / "config.yaml").write_text("general:\n  data_dir: data\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "overrides.yaml").write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError, match=expect):
+        load_config(tmp_path / "config.yaml")
 
 
 def test_config_validation(tmp_path):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any
 
@@ -186,10 +187,13 @@ def parse_json_loose(text: str) -> dict:
 
 def _int(v) -> int | None:
     try:
-        if v is None or v == "":
+        if v is None or v == "" or isinstance(v, bool):
             return None
-        return int(round(float(v)))
-    except (TypeError, ValueError):
+        f = float(v)
+        if not math.isfinite(f) or abs(f) > 1e12:      # NaN / Infinity / 天文数字：当作没给
+            return None
+        return int(round(f))
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -208,7 +212,10 @@ def validate_analysis(obj: dict, rule: dict[int, dict]) -> dict:
         action = str(raw.get("action", "")).lower().strip()
         conf = raw.get("confidence")
         try:
-            conf = min(max(float(conf), 0.0), 1.0)
+            conf = float(conf)
+            if isinstance(raw.get("confidence"), bool) or not math.isfinite(conf):
+                raise ValueError
+            conf = min(max(conf, 0.0), 1.0)
         except (TypeError, ValueError):
             conf = rule[oid].get("confidence", 0.3)
         seen[oid] = {

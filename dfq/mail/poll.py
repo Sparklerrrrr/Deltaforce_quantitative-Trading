@@ -125,15 +125,22 @@ def poll(cfg, db, transport: MailTransport, *, dry_run: bool = False) -> dict:
                      + ("【模拟】" if paper else ""))
             if t["note"]:
                 label += f"（{t['note']}）"
+            if not (0 < t["qty"] <= ledger.MAX_QTY and 0 < t["price"] <= ledger.MAX_PRICE):
+                errors.append(f"「{t['line']}」数字大得不合理，没有记账")
+                continue
             if not dry_run:
-                ledger.record_trade(db, t["side"], t["item"], t["qty"], t["price"], source="mail",
-                                    ts=m.date, message_id=m.message_id, paper=paper,
-                                    note=t["note"] or None)
+                try:
+                    ledger.record_trade(db, t["side"], t["item"], t["qty"], t["price"], source="mail",
+                                        ts=m.date, message_id=m.message_id, paper=paper,
+                                        note=t["note"] or None)
+                except ledger.LedgerError as e:
+                    errors.append(f"「{t['line']}」{e}")
+                    continue
             ok_lines.append(label)
         res["recorded"] += ok_lines
         res["paper_recorded" if paper else "real_recorded"] += len(ok_lines)
         res["errors"] += errors
-        status = "ok" if trades and not errors else ("partial" if trades else ("error" if errors else "empty"))
+        status = "ok" if ok_lines and not errors else ("partial" if ok_lines else ("error" if errors else "empty"))
         if dry_run:
             continue
         _log_in(db, m, status, "；".join(ok_lines + errors))

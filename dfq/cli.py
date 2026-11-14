@@ -54,6 +54,8 @@ def cmd_run(args) -> int:
                         (timeutil.fmt(now), mode, "running")).lastrowid
     ctx = Context(cfg=cfg, db=db, now=now, run_id=run_id, offline=args.offline,
                   dry_run=args.dry_run, mock=args.mock)
+    for note in cfg.notes:
+        ctx.warn(f"配置提示：{note}")
     results = run_pipeline(ctx, cfg.get("pipeline.nodes"))
     status = overall_status(results)
     cost = ctx.services["xtc"].cost_this_session if "xtc" in ctx.services else 0
@@ -103,6 +105,8 @@ def cmd_status(args) -> int:
     _print(f"dfq {__version__}　配置：{cfg.path if cfg.path and cfg.path.exists() else '（未找到 config.yaml，使用默认值）'}",
            f"数据目录：{cfg.data_dir}",
            f"模式：{'模拟（paper_mode）' if cfg.paper else '实盘记账'}　执行器：{cfg.get('executor.mode')}", "")
+    if cfg.notes:
+        _print("配置提示：", *[f"  · {n}" for n in cfg.notes], "")
     _print("环境变量（只显示是否已设置，不显示内容）：")
     used_by = {"DFQ_XTC_TOKEN": "小涛查行情", "DFQ_LLM_API_KEY": "大模型", "DFQ_SMTP_PASSWORD": "发信授权码",
                "DFQ_IMAP_PASSWORD": "收信授权码（可不设，默认同发信）", "DFQ_TAVILY_API_KEY": "新闻搜索"}
@@ -194,7 +198,11 @@ def cmd_balance(args) -> int:
         if args.amount is None:
             _print("用法：python -m dfq balance set 金额")
             return 2
-        ledger.set_balance(db, args.amount)
+        try:
+            ledger.set_balance(db, args.amount)
+        except ledger.LedgerError as e:
+            _print(f"没有设置：{e}")
+            return 2
         _print(f"余额基准已设为 {args.amount:,.0f}。之后的成交会自动在此基础上加减。")
     bal = funds.current_balance(cfg, db)
     if bal.get("note"):

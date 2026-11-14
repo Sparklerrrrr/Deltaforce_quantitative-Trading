@@ -197,6 +197,7 @@ class Config:
     def __init__(self, data: dict, path: Path | None = None):
         self.data = data
         self.path = path
+        self.notes: list[str] = []          # 校验时给出的不致命提示
 
     def get(self, dotted: str, default: Any = None) -> Any:
         cur: Any = self.data
@@ -258,61 +259,48 @@ def secret(name: str) -> str | None:
 
 
 def load_config(path: str | Path | None = None, *, overrides: dict | None = None) -> Config:
-    """读取配置。path 不存在时用默认值（方便首次试跑），并不会报错。"""
+    """读取并严格校验配置。任何一项不合法都抛 ConfigError（拒绝运行），不会悄悄改用默认值。
+
+    path 不存在时用内置默认值（方便首次试跑）。
+    """
+    from . import config_check
+
     p = Path(path) if path else Path("config.yaml")
     data = copy.deepcopy(DEFAULTS)
     if p.exists():
-        with open(p, encoding="utf-8") as f:
-            user = yaml.safe_load(f) or {}
+        try:
+            with open(p, encoding="utf-8") as f:
+                user = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            where = f"第 {mark.line + 1} 行" if mark is not None else ""
+            raise config_check.ConfigError([f"不是合法的 YAML{where}：{getattr(e, 'problem', e)}"], str(p)) from None
+        if user is None:
+            user = {}
         if not isinstance(user, dict):
-            raise ValueError(f"{p} 顶层必须是键值对")
+            raise config_check.ConfigError(["顶层必须是键值对"], str(p))
         data = deep_merge(data, user)
     cfg = Config(data, p.resolve())
     if overrides:
         cfg.data = deep_merge(cfg.data, overrides)
+    # 先保证 data_dir 本身合法，才能去找 overrides.yaml
+    dd = cfg.get("general.data_dir")
+    if not isinstance(dd, str) or not dd.strip():
+        config_check.check(cfg.data, str(p))
     ov = cfg.data_dir / "overrides.yaml"
     if ov.exists():
-        with open(ov, encoding="utf-8") as f:
-            extra = yaml.safe_load(f) or {}
-        for key, val in _flatten(extra).items():
-            if key in OVERRIDE_WHITELIST:
-                lo, hi = OVERRIDE_WHITELIST[key]
-                try:
-                    num = float(val)
-                except (TypeError, ValueError):
-                    continue
-                if lo <= num <= hi:
-                    cfg.set(key, int(num) if key.endswith("window_days") else num)
-    validate(cfg)
+        try:
+            with open(ov, encoding="utf-8") as f:
+                extra = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise config_check.ConfigError([f"不是合法的 YAML：{getattr(e, 'problem', e)}"], str(ov)) from None
+        for key, val in config_check.check_overrides(extra, OVERRIDE_WHITELIST, str(ov)).items():
+            cfg.set(key, int(val) if key.endswith("window_days") else float(val))
+    cfg.notes = config_check.check(cfg.data, str(p) if p.exists() else "内置默认配置")
     return cfg
 
 
-def _flatten(d: dict, prefix: str = "") -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k, v in (d or {}).items():
-        key = f"{prefix}{k}"
-        if isinstance(v, dict):
-            out.update(_flatten(v, key + "."))
-        else:
-            out[key] = v
-    return out
-
-
 def validate(cfg: Config) -> list[str]:
-    """基本合法性检查；返回提示信息（不致命的问题只提示，不抛错）。"""
-    notes = []
-    fee = cfg.fee
-    if not (0 <= fee < 0.9):
-        raise ValueError(f"fees.sell_fee_rate 不合理: {fee}")
-    bq, sq = cfg.get("rules.buy_quantile"), cfg.get("rules.sell_quantile")
-    if not (0 < bq < sq < 1):
-        raise ValueError("rules.buy_quantile 必须小于 rules.sell_quantile，且都在 (0,1) 内")
-    n = len(cfg.watchlist)
-    if n == 0:
-        raise ValueError("watchlist 不能为空")
-    if n > 10:
-        notes.append(f"关注清单有 {n} 个品种，建议控制在 5～10 个")
-    mode = cfg.get("executor.mode", "manual")
-    if mode not in ("manual", "auto"):
-        raise ValueError("executor.mode 只能是 manual 或 auto")
-    return notes
+    """校验一个已加载的配置对象；不合法抛 ConfigError，返回不致命的提示。"""
+    from . import config_check
+    return config_check.check(cfg.data)

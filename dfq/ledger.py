@@ -22,6 +22,11 @@ class LedgerError(Exception):
     pass
 
 
+# 合理性上限：超过它几乎肯定是输入错误（比如把数量和总价写在了一起）
+MAX_QTY = 1_000_000
+MAX_PRICE = 100_000_000
+
+
 def _norm(s: str) -> str:
     """名称归一化：去空白和常见分隔符、全角转半角、统一小写。"""
     s = s.strip().lower()
@@ -97,6 +102,8 @@ def record_trade(db, side: str, item: dict, qty: int, price: float, *, source: s
         ok = False
     if not ok or qty <= 0 or price <= 0:
         raise LedgerError("数量必须是正整数，价格必须是正数")
+    if qty > MAX_QTY or price > MAX_PRICE:
+        raise LedgerError(f"数字大得不合理（数量上限 {MAX_QTY:,}，单价上限 {MAX_PRICE:,}），多半是写错了，没有记账")
     if side == "sell":
         held = positions(db, paper=paper).get(item["name"], {}).get("qty", 0)   # 只和同一本账比
         if qty > held:

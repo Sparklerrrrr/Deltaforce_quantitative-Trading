@@ -11,6 +11,9 @@
 #     [Environment]::SetEnvironmentVariable("DFQ_XTC_TOKEN", "你的token", "User")
 #
 # ★ 没写的项目都有默认值，所以这份文件可以只留你想改的那几行。
+#
+# ★ 配置会被严格检查：取值超出范围、类型不对、键名拼错，程序都会明确报错并拒绝运行，
+#   不会悄悄改用默认值。比例一律写小数：5% 写 0.05，不要写 5。
 # ============================================================================
 
 general:
@@ -102,6 +105,9 @@ llm:
   max_tokens: 4000
   temperature: null         # 有的模型不接受这个参数，留 null 就不发送
   json_mode: true           # 发送 response_format={"type":"json_object"}；服务商不支持就改 false
+  allow_http_local: false   # base_url 必须是 https://。唯一的例外：模型跑在本机
+                            # （http://localhost 或 http://127.0.0.1），并且把这里改成 true。
+                            # 远程地址、局域网地址用 http 一律拒绝（API Key 会被明文传输）
 
 # ---------------------------------------------------------------------------
 # 资讯与观点
@@ -136,7 +142,14 @@ mail:
   imap_host: imap.qq.com
   imap_port: 993
   imap_user: ""             # 不填则同 smtp_user
-  require_thread_match: true  # 只接受“对计划邮件的回复”，防止别人伪造你的地址来记假账
+  auth:
+    # 发件人身份验证。From 地址和“回复关系”都能伪造，所以程序还要看你的邮箱服务商
+    # 写进邮件头的 SPF / DKIM / DMARC 验证结论，确认邮件真的来自你的邮箱域，才会记账。
+    # 这里填服务商写在 Authentication-Results 邮件头开头的标识。
+    # 留空 = 不采信任何验证结果 = 邮件回复一律不记账（计划照常发，记账改用命令行）。
+    # 怎么知道该填什么：回复一封计划邮件后运行 python -m dfq mail-poll --dry-run，
+    # 它会列出邮件里出现的标识。只填你确认属于自己邮箱服务商的那个。（各家邮箱是否提供该信息未实测）
+    trusted_authserv: []
   confirm_success: false    # 记账成功是否单独回信确认（默认不回，回执合并进当晚的计划邮件）
   poll_lookback_days: 3
 
