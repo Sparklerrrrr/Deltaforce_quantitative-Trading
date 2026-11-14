@@ -68,6 +68,7 @@ def redact(text: Any) -> str:
 def redact_url(url: str) -> str:
     """只保留 协议+主机+路径，查询串整体丢弃（最保守的做法）。"""
     base = url.split("?", 1)[0].split("#", 1)[0]
+    base = re.sub(r"^([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@]*@", r"\1", base)   # 去掉 用户名:密码@
     return redact(base)
 
 

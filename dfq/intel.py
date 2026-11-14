@@ -24,7 +24,7 @@ from . import llm as L
 from . import timeutil
 from .http import HttpError, request_json
 from .ledger import _norm
-from .log import event, get_logger
+from .log import event, get_logger, register_secret
 
 log = get_logger("intel")
 
@@ -129,6 +129,7 @@ def fetch_news(cfg, db, api_key: str | None, transport=None) -> int:
         raise ValueError(f"未实现的新闻搜索提供方: {provider}（可在 intel.py 的 fetch_news 里扩展）")
     if not api_key:
         raise ValueError("已开启新闻搜索，但未设置环境变量 DFQ_TAVILY_API_KEY")
+    register_secret(api_key)
     n = 0
     for q in cfg.get("intel.news.queries") or []:
         try:

@@ -13,8 +13,8 @@ import re
 from typing import Any
 
 from . import timeutil
-from .http import HttpError, Transport, request_json
-from .log import event, get_logger
+from .http import HttpError, InsecureUrl, Transport, check_secure_url, request_json
+from .log import event, get_logger, register_secret
 
 log = get_logger("llm")
 
@@ -82,18 +82,29 @@ class LLMClient:
         self.cfg = cfg
         self.api_key = api_key
         self.transport = transport
-        self.base_url = str(cfg.get("llm.base_url") or "").rstrip("/")
+        self.base_url = str(cfg.get("llm.base_url") or "").strip().rstrip("/")
         self.model = str(cfg.get("llm.model") or "")
+        self.allow_http_local = bool(cfg.get("llm.allow_http_local", False))
+        register_secret(api_key)             # 即使服务端把 Key 原样写进报错正文，日志和异常里也会被打码
+        self.url_error = ""
+        if self.base_url:
+            try:
+                check_secure_url(self.base_url, allow_http_local=self.allow_http_local, what="llm.base_url")
+            except InsecureUrl as e:
+                self.url_error = str(e)
 
     @property
     def ready(self) -> bool:
-        return bool(self.cfg.get("llm.enabled") and self.base_url and self.model and self.api_key)
+        return bool(self.cfg.get("llm.enabled") and self.base_url and self.model and self.api_key
+                    and not self.url_error)
 
     def why_not_ready(self) -> str:
         if not self.cfg.get("llm.enabled"):
             return "llm.enabled 为 false"
         if not self.base_url or not self.model:
             return "llm.base_url 或 llm.model 未配置"
+        if self.url_error:
+            return self.url_error
         if not self.api_key:
             return "未设置环境变量 DFQ_LLM_API_KEY"
         return ""
@@ -115,7 +126,8 @@ class LLMClient:
                 "POST", f"{self.base_url}/chat/completions", json_body=body,
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 timeout=float(self.cfg.get("llm.timeout", 120)),
-                retries=int(self.cfg.get("llm.retries", 1)), transport=self.transport)
+                retries=int(self.cfg.get("llm.retries", 1)), transport=self.transport,
+                allow_http_local=self.allow_http_local)
         except HttpError as e:
             raise LLMError(f"模型请求失败: {e}") from None
         try:

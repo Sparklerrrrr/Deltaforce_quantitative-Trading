@@ -15,12 +15,15 @@ from dfq import timeutil
 from dfq.config import DEFAULTS, Config
 from dfq.db import DB
 
+REAL_OPENER_OPEN = urllib.request.OpenerDirector.open   # 仅供“只连本机回环地址”的测试恢复使用
+
 
 @pytest.fixture(autouse=True)
 def _no_network_no_secrets(monkeypatch):
     def blocked(*a, **k):
         raise AssertionError("测试试图访问真实网络！请注入假的 transport")
     monkeypatch.setattr(urllib.request, "urlopen", blocked)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", blocked)
     for k in list(os.environ):
         if k.startswith("DFQ_"):
             monkeypatch.delenv(k, raising=False)

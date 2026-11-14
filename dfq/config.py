@@ -94,6 +94,7 @@ DEFAULTS: dict[str, Any] = {
         "max_tokens": 4000,
         "temperature": None,
         "json_mode": True,
+        "allow_http_local": False,   # 只有模型跑在本机（localhost/127.0.0.1）时才可能需要打开
     },
     "intel": {
         "bilibili": {
