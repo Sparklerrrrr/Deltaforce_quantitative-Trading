@@ -1,0 +1,6 @@
+# Windows 脚本必须保持 CRLF；.ps1 的 UTF-8 BOM 也不能丢
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.py  text eol=lf
+*.md  text eol=lf
+*.yaml text eol=lf

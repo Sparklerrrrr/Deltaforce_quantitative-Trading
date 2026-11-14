@@ -1,0 +1,8 @@
+# 必需
+PyYAML>=6.0
+# 可选：moligod 提醒同步（python -m playwright install chromium）
+# playwright>=1.44
+# 可选：本地语音转写（B 站无字幕时）
+# faster-whisper>=1.0
+# 开发 / 测试
+pytest>=8.0

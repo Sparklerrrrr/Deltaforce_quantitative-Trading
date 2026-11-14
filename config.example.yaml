@@ -1,0 +1,189 @@
+# ============================================================================
+# dfq 配置文件示例。用法：复制一份改名为 config.yaml（或执行 python -m dfq init）
+#
+# ★ 密钥一律不写在这里，只从环境变量读取：
+#     DFQ_XTC_TOKEN        小涛查接口 token（必需）
+#     DFQ_LLM_API_KEY      大模型 API Key（开启 llm 时需要）
+#     DFQ_SMTP_PASSWORD    发信密码；QQ 邮箱填“授权码”（开启 mail 时需要）
+#     DFQ_IMAP_PASSWORD    收信密码；不设则与发信相同
+#     DFQ_TAVILY_API_KEY   新闻搜索 Key（开启 intel.news 时需要）
+#   Windows 设置方法（PowerShell，设完重开终端）：
+#     [Environment]::SetEnvironmentVariable("DFQ_XTC_TOKEN", "你的token", "User")
+#
+# ★ 没写的项目都有默认值，所以这份文件可以只留你想改的那几行。
+# ============================================================================
+
+general:
+  data_dir: data            # 数据库、缓存、计划、日志都放这里（已被 .gitignore 排除）
+  paper_mode: true          # 模拟模式：邮件标题标“模拟”，建议只记录打分，不计入真实持仓。
+                            # 建议先开着跑 1～2 周，用 python -m dfq perf 看效果，再改成 false
+  run_every_days: 1         # 每几天跑一次。计划任务可以每晚都触发，没到日子程序会自己跳过
+  plan_valid_hours: 24      # 每份计划的有效期（小时），过期作废
+
+# ---------------------------------------------------------------------------
+# 关注清单：只维护 5～10 个品种，阈值太多你盯不过来
+#   name          游戏内 / 小涛查上的准确名称（程序按它去匹配接口返回的最新 oid）
+#   oid           可不填。下面的值来自小涛查公开文档的示例，未实测；运行时以接口为准
+#   alias         简称，回复邮件记账时可以用（如 “买 PS12B 200 3550”）
+#   moligod_name  该品种在 moligod 网站上的写法；与 name 不同时才需要填
+#   search        游戏交易行里的搜索关键词；不填则用 name
+# ---------------------------------------------------------------------------
+watchlist:
+  - {name: "12.7x55mm PS12B", oid: 626, alias: [PS12B]}
+  - {name: "5.7x28mm SS190",  oid: 640, alias: [SS190]}
+  - {name: "5.56x45mm M995",  oid: 635, alias: [M995]}
+  - {name: "5.45x39mm BS",    oid: 629, alias: [BS]}
+  - {name: "7.62x39mm AP",    oid: 652, alias: [762AP, 39AP]}
+  - {name: "7.62x51mm M62",   oid: 657, alias: [M62]}
+  - {name: "6.8x51mm Hybrid", oid: 648, alias: [Hybrid, 68H]}
+  - {name: "5.8x42mm DVC12",  oid: 646, alias: [DVC12]}
+
+fees:
+  sell_fee_rate: 0.13       # 卖出综合费率（手续费 + 上架费）。回本卖价 = 买入价 ÷ (1 − 0.13)
+  warn_diff: 0.03           # 用“秒出价”反推的费率与上面相差超过 3 个点时，在邮件里提示
+
+# ---------------------------------------------------------------------------
+# 小涛查开放平台（主数据源，按次扣费）
+# ---------------------------------------------------------------------------
+xtc:
+  enabled: true
+  base_url: https://orzice.com/workApi
+  daily_limit: 60           # 每日请求上限，超过即停并在邮件里报警。正常每晚约 13～15 次
+  timeout: 15
+  retries: 2                # 只对网络错误和 5xx 重试；每次重试也计入次数
+  ammo_key1: 子弹            # 子弹的分类索引。未实测！请先跑 python -m dfq probe 确认
+  ammo_key2: 全部
+  grades: auto              # “低价预测/昨日收益”按品质请求。auto = 关注清单里出现的品质
+                            # probe 如果证实 grade=0 表示全部，可改成 [0] 省次数
+  fetch_minute: true        # 分钟曲线（接口只给 24 小时，必须每晚拉才能攒出历史）
+  fetch_day_bootstrap: true # 每个品种首次运行时拉一次天曲线（30 天历史，一次性）
+  fetch_hour_forecast: false  # 小时曲线 + 平台的未来价格预测；每品种多 1 次，默认关
+  fetch_ammo_day: true      # 今日倒子弹低价预测（当作一个信源，会被打分）
+  fetch_ammo_yesterday: true  # 昨日倒子弹最高收益
+
+features:
+  window_days: 7            # 用最近几天的价格分布来算分位
+
+# ---------------------------------------------------------------------------
+# 规则基线（不用大模型也能出计划）
+# ---------------------------------------------------------------------------
+rules:
+  buy_quantile: 0.15        # 买入线 = 近 N 天价格的 15% 分位（越小越难买到、买到越便宜）
+  sell_quantile: 0.85       # 卖出线 = 85% 分位
+  min_margin: 0.03          # 卖出线至少要比回本价高 3%，否则只观望
+  stop_pct: 0.10            # 止损线不高于 买入线 × (1 − 10%)
+  stop_buffer: 0.02         # 且不高于 近期最低价 × (1 − 2%)。
+                            # 注意：因为卖出要扣 13%，在买入线下 10% 止损 ≈ 实亏 22%，
+                            # 所以止损只应在“跌破近期所有低点”时触发，而不是日常波动
+  trend_block_pct: 15.0     # 7 日跌幅超过 15% 时不买（不接飞刀）
+
+# ---------------------------------------------------------------------------
+# 风控（代码强制，大模型绕不过）
+# ---------------------------------------------------------------------------
+risk:
+  assumed_capital: 3000000  # 没填余额时按这个数估算仓位。填余额：python -m dfq balance set 金额
+  max_daily_spend_pct: 0.5  # 每日最大投入 = 总资产 × 50%
+  max_position_pct: 0.25    # 单品种最大持仓 = 总资产 × 25%
+  max_total_exposure_pct: 0.7   # 总仓位上限 = 总资产 × 70%
+  lot_size: 10              # 数量取整单位
+  min_qty: 20               # 算出来不足 20 发就不买
+  llm_max_adjust_pct: 0.10  # 大模型对规则阈值的调整幅度上限（±10%）
+  max_valid_hours: 72
+
+# ---------------------------------------------------------------------------
+# 大模型（任何兼容 OpenAI /chat/completions 格式的服务都行）。默认关闭
+# ---------------------------------------------------------------------------
+llm:
+  enabled: false
+  base_url: ""              # 例：https://你的服务商/v1  （不要带 /chat/completions）
+  model: ""                 # 服务商给的模型名
+  timeout: 120
+  retries: 1
+  max_tokens: 4000
+  temperature: null         # 有的模型不接受这个参数，留 null 就不发送
+  json_mode: true           # 发送 response_format={"type":"json_object"}；服务商不支持就改 false
+
+# ---------------------------------------------------------------------------
+# 资讯与观点
+# ---------------------------------------------------------------------------
+intel:
+  bilibili:
+    enabled: false          # 自动抓取没有实现（B 站接口的 robots.txt 禁止，且需要伪造签名）。
+    ups:                    # 这里只是提醒你关注谁；文字稿请手动放进 manual_notes/
+      - {name: moligod}
+      - {name: "十七-_-三角洲行动"}
+  news:
+    enabled: false          # 新闻搜索（Tavily）。需要 DFQ_TAVILY_API_KEY
+    provider: tavily
+    queries: ["三角洲行动 子弹 平衡调整 公告", "三角洲行动 版本更新 交易行"]
+    max_results: 5
+    days: 3
+  manual_dir: manual_notes  # 手动粘贴的文字稿、群消息放这个目录（.txt / .md）
+  opinion_horizon_days: 3   # 观点给出几天后对照真实价格打分
+  opinion_min_move_pct: 2.0 # 价格变动不到 2% 的，方向性观点算没说中
+
+# ---------------------------------------------------------------------------
+# 邮件。默认关闭：关闭时计划只写到 data/outbox/latest.txt
+# ---------------------------------------------------------------------------
+mail:
+  enabled: false
+  backend: smtp_imap        # smtp_imap = 真实收发；file = 只写文件
+  owner_address: ""         # 你的邮箱。计划发到这里；程序也只认这个地址发来的回复
+  from_address: ""          # 发件邮箱（可以和上面相同：自己发给自己）
+  smtp_host: smtp.qq.com
+  smtp_port: 465
+  smtp_user: ""             # 一般就是发件邮箱地址
+  imap_host: imap.qq.com
+  imap_port: 993
+  imap_user: ""             # 不填则同 smtp_user
+  require_thread_match: true  # 只接受“对计划邮件的回复”，防止别人伪造你的地址来记假账
+  confirm_success: false    # 记账成功是否单独回信确认（默认不回，回执合并进当晚的计划邮件）
+  poll_lookback_days: 3
+
+executor:
+  mode: manual              # manual = 发邮件由你手动执行（唯一实现）。
+                            # auto 只是预留的插件入口，没有实现；选了也会报错并回退到 manual
+
+# ---------------------------------------------------------------------------
+# moligod 价格提醒同步。默认关闭：关闭时邮件里会列出要你手动设置的阈值
+# 开启前先执行一次 python -m dfq moligod-login 手动登录
+# ---------------------------------------------------------------------------
+moligod:
+  enabled: false
+  url: https://moligod.com/ammo-realtime
+  headless: false           # 建议保持 false（有界面），出问题时能看到浏览器停在哪
+  min_gap_sec: 4            # 两次操作之间随机等待 4～8 秒
+  max_gap_sec: 8
+  max_ops_per_run: 20
+  timeout_sec: 20
+
+funds:
+  official_enabled: false   # 官方接口查余额：未实现（接口无法核实），保持 false
+
+review:
+  sell_horizon_hours: 48    # 买入后观察多久：到卖出线算止盈，到止损线算止损，否则按到期价估值
+  reflect_every_days: 7     # 每几天做一次“反思”（建议只存档，等你确认才生效）
+
+watch:
+  enabled: false            # 每小时异常波动检查。每天约多花 48 次请求，开启前先调高 xtc.daily_limit
+  move_pct: 8.0
+
+# ---------------------------------------------------------------------------
+# 流水线：一般不用改。每个节点可以单独关闭（enabled: false）或改失败策略
+#   on_fail: degrade 降级继续 | skip 跳过 | abort 中止（标了 always 的仍会执行）| goto:节点名
+# 需要调整时把下面整段取消注释再改
+# ---------------------------------------------------------------------------
+# pipeline:
+#   nodes:
+#     - {id: mail_poll,      on_fail: skip}
+#     - {id: collect_market, retries: 1, on_fail: degrade}
+#     - {id: collect_intel,  on_fail: skip}
+#     - {id: review,         on_fail: skip}
+#     - {id: reflect,        on_fail: skip}
+#     - {id: features,       on_fail: abort}
+#     - {id: rule_baseline,  on_fail: abort}
+#     - {id: llm_analyze,    retries: 1, on_fail: degrade}
+#     - {id: guardrails,     on_fail: abort}
+#     - {id: write_plan,     on_fail: abort}
+#     - {id: sync_alerts,    on_fail: degrade}
+#     - {id: notify,         retries: 1, on_fail: degrade, always: true}
