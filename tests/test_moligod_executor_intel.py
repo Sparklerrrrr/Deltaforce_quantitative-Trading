@@ -213,6 +213,11 @@ def test_windows_scripts_have_safe_encodings():
     """.bat 必须纯 ASCII（cmd 按系统代码页读）；.ps1 必须带 UTF-8 BOM（否则 PowerShell 5.1 中文乱码）。"""
     import pathlib
     scripts = pathlib.Path(__file__).resolve().parent.parent / "scripts"
-    (scripts / "run_dfq.bat").read_bytes().decode("ascii")
+    bats = sorted(scripts.glob("*.bat"))
+    assert {b.name for b in bats} >= {"run_dfq.bat", "build_exe.bat"}
+    for b in bats:
+        raw = b.read_bytes()
+        raw.decode("ascii")
+        assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")   # 全部 CRLF
+        assert b"TOKEN=" not in raw and b"PASSWORD=" not in raw              # 脚本里不许出现密钥赋值
     assert (scripts / "install_tasks.ps1").read_bytes().startswith(b"\xef\xbb\xbf")
-    assert b"TOKEN=" not in (scripts / "run_dfq.bat").read_bytes()      # 脚本里不许出现密钥赋值

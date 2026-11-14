@@ -175,7 +175,7 @@ def cmd_trade(args) -> int:
         return 2
     ts = timeutil.parse_dt(args.at) if args.at else None
     try:
-        tid = ledger.record_trade(db, args.side, item, args.qty, args.price, source="cli", ts=ts,
+        tid = ledger.record_trade(db, args.side, item, args.qty, args.price, source=args.source, ts=ts,
                                   paper=args.paper, note=args.note)
     except ledger.LedgerError as e:
         _print(f"没有记账：{e}")
@@ -186,8 +186,23 @@ def cmd_trade(args) -> int:
     if pos:
         _print(f"当前{'模拟' if args.paper else ''}持仓 ×{pos['qty']}，均价 {pos['avg_cost']:.0f}")
     if cfg.paper and not args.paper:
-        _print("注意：现在是模拟模式（paper_mode），但这笔记进了真实账本。如果它只是模拟成交，"
-               "请删掉重记并加 --paper。")
+        _print(f"注意：现在是模拟模式（paper_mode），但这笔记进了真实账本。如果它只是模拟成交，"
+               f"请撤销（python -m dfq trade-undo {tid}）后加 --paper 重记。")
+    return 0
+
+
+def cmd_trade_undo(args) -> int:
+    cfg, db = _open(args)
+    from . import ledger
+    try:
+        row = ledger.delete_trade(db, args.id)
+    except ledger.LedgerError as e:
+        _print(f"没有撤销：{e}")
+        return 2
+    _print(f"已撤销 #{row['id']}：{row['ts'][:16]} {'买' if row['side'] == 'buy' else '卖'} {row['name']} "
+           f"×{row['qty']} @{row['price']:.0f}（{'模拟账本' if row['paper'] else '真实账本'}，来源 {row['source']}）")
+    if row["source"] == "mail":
+        _print("这笔来自邮件回复。同一封邮件不会被再次记账；如需更正，请用 trade 命令手动补记。")
     return 0
 
 
@@ -399,6 +414,11 @@ def cmd_watch(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    from . import gui
+    return gui.main(config=args.config)
+
+
 def cmd_init(args) -> int:
     dst = Path(args.config)
     src = Path(__file__).resolve().parent.parent / "config.example.yaml"
@@ -441,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("status", cmd_status, "查看配置、环境变量、接口用量、数据覆盖")
     add("plan", cmd_plan, "查看最新的交易计划")
     add("init", cmd_init, "从 config.example.yaml 生成 config.yaml")
+    add("gui", cmd_gui, "打开图形界面")
 
     sp = add("trade", cmd_trade, "命令行记账：trade buy PS12B 200 3550")
     sp.add_argument("side", choices=["buy", "sell"])
@@ -450,6 +471,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--paper", action="store_true", help="记为模拟成交（不计入真实持仓）")
     sp.add_argument("--at", help="成交时间，如 '2026-11-14 10:30'（默认现在）")
     sp.add_argument("--note")
+    sp.add_argument("--source", choices=["cli", "gui"], default="cli", help=argparse.SUPPRESS)
+    sp = add("trade-undo", cmd_trade_undo, "撤销一笔记错的成交：trade-undo 编号（编号见 status 或界面）")
+    sp.add_argument("id", type=int)
 
     sp = add("balance", cmd_balance, "查看 / 设置哈夫币余额：balance set 5000000")
     sp.add_argument("action", nargs="?", choices=["show", "set"], default="show")

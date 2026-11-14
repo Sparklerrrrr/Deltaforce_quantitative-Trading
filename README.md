@@ -13,6 +13,39 @@
 
 ---
 
+## 〇、图形界面（DFQ.exe）
+
+不想敲命令的话，用图形界面就能完成日常的所有操作：运行、看计划、记账、复盘、录入资讯、填密钥。
+
+**生成 DFQ.exe**（只需一次，之后更新代码再做一次）：在项目根目录双击
+
+```
+scripts\build_exe.bat
+```
+
+它会自动建 `.venv`、装依赖和 PyInstaller，然后在项目根目录生成 `DFQ.exe`（约 1 分钟）。
+需要 Python 3.11 及以上，且安装时勾选了“tcl/tk and IDLE”（python.org 安装包默认勾选）。
+
+**使用**：双击 `DFQ.exe`。**请让它留在项目根目录**（和 `scripts` 文件夹同级）：
+它和计划任务共用这里的 `config.yaml` 和 `data\`，数据才对得上。
+
+| 页面 | 能做什么 |
+|---|---|
+| 首页 | 演示一遍（模拟数据）、运行（只用规则 / 规则 + 大模型）、查看状态、接口实测、读取邮件回复 |
+| 最新计划 | 显示最近一次生成的计划（与邮件内容相同） |
+| 记账 | 记一笔成交（可选模拟/真实账本）、设余额、查看最近成交、撤销记错的成交 |
+| 复盘 | 绩效对比、给到期建议打分、反思记录与采纳 |
+| 资讯录入 | 粘贴 UP 主文稿、群聊、公告并入库 |
+| 设置 | 填写/清除密钥、生成和检查 config.yaml、打开数据文件夹、登录 moligod、创建计划任务 |
+
+- 会消耗接口次数、调用大模型或改动账本的操作，执行前都会弹窗确认。
+- 勾选右上角“使用模拟数据”后，所有操作都用模拟行情、写到 `data\mock\`，不联网、不花钱。
+- **密钥只能填、不能看**：输入框用圆点遮住，保存到 Windows 用户环境变量，界面上只显示“已设置/未设置”。
+  保存后本程序立即生效；启动时也会从系统里补读——所以“设了 token 但程序读不到”的问题在界面里不会出现。
+- 界面里每个按钮调用的都是下面的同一套命令，校验、护栏、两本账的隔离完全一样。
+- 不想打包也可以直接运行：`.venv\Scripts\python -m dfq gui`。
+- 打包后的 exe 不含 Playwright，所以“登录 moligod”需要用 `python -m dfq gui` 方式打开、并按下文安装 Playwright 才能用。
+
 ## 一、安装
 
 需要 Windows + Python 3.11 或更高版本。在项目根目录打开 PowerShell：
@@ -102,7 +135,9 @@ python -m dfq run --offline --show
 | `python -m dfq probe` | 实测接口，生成探测报告 |
 | `python -m dfq status` | 配置、环境变量、接口用量、数据覆盖、持仓 |
 | `python -m dfq plan` | 查看最新计划 |
+| `python -m dfq gui` | 打开图形界面 |
 | `python -m dfq trade buy PS12B 200 3550` | 命令行记账（`sell` 同理；`--paper` 记为模拟） |
+| `python -m dfq trade-undo 12` | 撤销编号为 12 的成交（编号见界面“记账”页） |
 | `python -m dfq balance set 5000000` | 设置余额基准；不带参数则查看 |
 | `python -m dfq mail-poll` | 读取邮件回复并记账 |
 | `python -m dfq mail-test` | 发一封测试邮件 |
@@ -212,6 +247,7 @@ PowerShell 里先执行 `chcp 65001`，或改用 Windows Terminal。
 ```
 dfq/                    程序本体
   cli.py                命令行入口
+  gui.py gui_core.py    图形界面（tkinter）及其核心逻辑
   config.py             配置加载（默认值 + config.yaml + 你确认过的反思调整）
   pipeline.py nodes.py  任务流水线引擎和各个节点
   sources/              数据源：xtc.py 小涛查客户端、mock.py 模拟行情、catalog.py 子弹参考表
@@ -231,7 +267,7 @@ dfq/                    程序本体
   probe.py watch.py     接口探测、每小时异动检查
   log.py http.py db.py timeutil.py fees.py   基础设施
 tests/                  单元测试（不联网、不花接口次数）
-scripts/                Windows 计划任务脚本
+scripts/                Windows 脚本：计划任务、打包 DFQ.exe
 docs/                   接口探测报告、总结报告
 manual_notes/           手动粘贴的资讯文稿
 config.example.yaml     配置示例

@@ -117,6 +117,20 @@ def record_trade(db, side: str, item: dict, qty: int, price: float, *, source: s
     return cur.lastrowid
 
 
+def delete_trade(db, trade_id: int) -> dict:
+    """撤销一笔记错的成交，返回被删掉的那条记录。找不到抛 LedgerError。
+
+    持仓、余额都是由成交记录现算出来的，所以删掉这一条，账面就恢复到没记它之前。
+    """
+    if isinstance(trade_id, bool) or not isinstance(trade_id, int) or trade_id <= 0:
+        raise LedgerError("成交编号必须是正整数")
+    row = db.one("SELECT * FROM trades WHERE id=?", (trade_id,))
+    if row is None:
+        raise LedgerError(f"没有编号为 {trade_id} 的成交")
+    db.execute("DELETE FROM trades WHERE id=?", (trade_id,))
+    return dict(row)
+
+
 def positions(db, fee: float = fees.DEFAULT_FEE, *, paper: bool = False) -> dict[str, dict]:
     """某一本账的持仓：{名称: {oid, qty, avg_cost, realized}}。默认真实账本。"""
     pos: dict[str, dict] = {}
