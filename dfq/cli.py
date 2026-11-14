@@ -255,8 +255,12 @@ def cmd_mail_test(args) -> int:
         mid = transport.send(
             "【测试】dfq 邮件发送正常",
             "这是一封测试邮件。能收到说明发信配置正确。\n\n"
-            "想顺便测试“回复记账”：直接回复本邮件一行成交（格式：方向 品种 数量 成交价），\n"
-            "然后运行  python -m dfq mail-poll --dry-run  —— 它只显示解析结果，不会真的记账。\n",
+            "下一步，确认“回复记账”能用：直接回复本邮件一行成交（格式：方向 品种 数量 成交价），\n"
+            "然后运行  python -m dfq mail-poll --dry-run  （只检查，不会真的记账）。\n"
+            "· 如果提示“身份验证未通过”，它会列出邮件里出现的验证标识，\n"
+            "  把属于你邮箱服务商的那个填进 config.yaml 的 mail.auth.trusted_authserv 再试。\n"
+            "· 如果提示“回复的那封邮件不是交易计划”，说明身份验证已经通过，一切正常\n"
+            "  （测试邮件不对应任何计划，所以本来就不该记账）。\n",
             to=cfg.get("mail.owner_address") or "owner@localhost")
         # 记下这封信的编号，这样对它的回复才能通过“必须是对本系统邮件的回复”这道校验
         db.execute("INSERT OR IGNORE INTO mail_log(message_id,direction,subject,ts,status) VALUES(?,?,?,?,?)",
