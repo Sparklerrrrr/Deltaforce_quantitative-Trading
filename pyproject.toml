@@ -1,0 +1,17 @@
+[project]
+name = "dfq"
+version = "1.0.0"
+description = "三角洲行动子弹交易决策助手：定时采集行情、生成交易计划、邮件通知人工执行、复盘打分"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+moligod = ["playwright>=1.44"]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["dfq*"]
