@@ -13,6 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Callable
 
+from . import envfile
 from .log import redact, register_secret
 
 # 界面里可以设置的密钥：(环境变量名, 用途说明)
@@ -107,7 +108,7 @@ def run_cli(argv: list[str], emit: Callable[[str], None], *,
 
 # ------------------------------------------------------------------ 密钥
 class SecretBackend:
-    """密钥的持久化位置。Windows 上是“用户环境变量”（注册表 HKCU\\Environment）。"""
+    """密钥的持久化位置（基类：不可保存）。实际使用的是 DotEnvFile。"""
 
     available = False
     where = "不可用"
@@ -116,54 +117,37 @@ class SecretBackend:
         return None
 
     def write(self, name: str, value: str) -> None:
-        raise RuntimeError("当前系统不支持在界面里保存密钥，请手动设置环境变量")
+        raise RuntimeError("当前不支持在界面里保存密钥")
 
     def delete(self, name: str) -> None:
-        raise RuntimeError("当前系统不支持在界面里删除密钥")
+        raise RuntimeError("当前不支持在界面里删除密钥")
 
 
-class WindowsUserEnv(SecretBackend):
+class DotEnvFile(SecretBackend):
+    """项目文件夹里的 .env 文件（已在 .gitignore 里，不会被提交）。格式与读写规则见 dfq/envfile.py。"""
+
     available = True
-    where = "Windows 用户环境变量"
 
-    def __init__(self):
-        import winreg                                # noqa: F401 仅 Windows 有
-        self._wr = winreg
-
-    def _key(self, access):
-        return self._wr.OpenKey(self._wr.HKEY_CURRENT_USER, "Environment", 0, access)
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.where = f"项目文件夹的 {self.path.name} 文件（不会被提交）"
 
     def read(self, name: str) -> str | None:
-        try:
-            with self._key(self._wr.KEY_READ) as k:
-                val, _ = self._wr.QueryValueEx(k, name)
-                return str(val) if val else None
-        except FileNotFoundError:
-            return None
+        return envfile.read(self.path).get(name)
 
     def write(self, name: str, value: str) -> None:
-        with self._key(self._wr.KEY_SET_VALUE) as k:
-            self._wr.SetValueEx(k, name, 0, self._wr.REG_SZ, value)
+        envfile.write(self.path, name, value)
 
     def delete(self, name: str) -> None:
-        try:
-            with self._key(self._wr.KEY_SET_VALUE) as k:
-                self._wr.DeleteValue(k, name)
-        except FileNotFoundError:
-            pass
+        envfile.write(self.path, name, None)
 
 
-def default_backend() -> SecretBackend:
-    if sys.platform == "win32":
-        try:
-            return WindowsUserEnv()
-        except Exception:
-            pass
-    return SecretBackend()
+def default_backend(base: Path | None = None) -> SecretBackend:
+    return DotEnvFile(Path(base or default_base_dir()) / envfile.FILENAME)
 
 
 class SecretStore:
-    """保存 / 清除密钥。值只写进系统和本进程的环境变量，从不显示、不写文件、不写日志。"""
+    """保存 / 清除密钥。值只写进 .env 文件和本进程的环境变量，从不显示、不写日志。"""
 
     def __init__(self, backend: SecretBackend | None = None, environ=None):
         self.backend = backend if backend is not None else default_backend()
@@ -172,8 +156,7 @@ class SecretStore:
     def load_into_process(self) -> list[str]:
         """启动时把系统里已保存、但本进程还看不到的密钥读进来。
 
-        常见情况：设置环境变量之前就打开了的程序（或资源管理器）启动本程序，
-        子进程继承的是旧环境，看不到新设置的 token。返回补读到的变量名。
+        系统 / 终端里已经设置的同名环境变量优先，不会被覆盖。返回补读到的变量名。
         """
         loaded = []
         if not self.backend.available:

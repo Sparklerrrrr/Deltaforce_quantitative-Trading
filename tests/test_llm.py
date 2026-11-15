@@ -43,6 +43,28 @@ def test_request_is_openai_compatible_and_key_only_in_header(cfg):
     assert "sk-test-key-123456" not in json.dumps(cap["body"])
 
 
+def test_extra_body_is_merged_but_cannot_override_core_fields(cfg):
+    cap = {}
+    c = client(cfg, '{"items": []}', capture=cap)
+    cfg.set("llm.extra_body", {"thinking": {"type": "disabled"}, "model": "evil-model"})
+    c.chat_json("系统", "用户")
+    assert cap["body"]["thinking"] == {"type": "disabled"}
+    assert cap["body"]["model"] == "some-model"                              # 保留字段不会被覆盖
+
+
+def test_truncated_output_explains_max_tokens_and_thinking(cfg):
+    def transport(method, url, params, body, headers, timeout):
+        return 200, json.dumps({"choices": [{"message": {"content": '{"items": ['}, "finish_reason": "length"}],
+                                "usage": {"completion_tokens": 4000}}).encode()
+    cfg.set("llm.enabled", True)
+    cfg.set("llm.base_url", "https://llm.example/v1")
+    cfg.set("llm.model", "m")
+    cfg.set("llm.retries", 0)
+    c = L.LLMClient(cfg, "sk-test-key-123456", transport=transport)
+    with pytest.raises(L.LLMError, match="max_tokens.*思考模式"):
+        c.chat_json("s", "u")
+
+
 def test_not_ready_reasons(cfg):
     c = L.LLMClient(cfg, None)
     assert not c.ready and "enabled" in c.why_not_ready()

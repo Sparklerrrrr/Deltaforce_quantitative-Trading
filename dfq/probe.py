@@ -1,7 +1,7 @@
 """阶段 0：接口实测探测（python -m dfq probe）。
 
 用最少的真实请求确认公开文档里的信息，硬上限 15 次（超过立即停止）。
-结果写到 docs/接口探测报告-实测.md（不含任何密钥）和 data/probe/ 下的原始响应。
+结果写到 data/reports/接口探测报告-实测.md（不含任何密钥）和 data/probe/ 下的原始响应。
 
 探测顺序（预计 11～13 次）：
   筛选项 0 次 → 子弹列表 3～5 次 → 分钟曲线 1 → 小时曲线 2（含/不含预测）→ 天曲线 1
@@ -35,9 +35,9 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
     """执行探测。返回 {"ok", "used", "report_path", "lines"}。"""
     if not token and transport is None:
         return {"ok": False, "used": 0, "report_path": None,
-                "lines": ["未设置环境变量 DFQ_XTC_TOKEN，探测没有执行，也没有消耗任何次数。",
-                          "Windows 设置方法（PowerShell，设置后重开终端）：",
-                          '  [Environment]::SetEnvironmentVariable("DFQ_XTC_TOKEN", "你的token", "User")']}
+                "lines": ["未设置 DFQ_XTC_TOKEN，探测没有执行，也没有消耗任何次数。",
+                          "设置方法：在 DFQ.exe 的“设置”页填写；或在程序文件夹的 .env 文件里加一行：",
+                          "  DFQ_XTC_TOKEN=你的token"]}
     cfg.set("xtc.retries", 0)                      # 探测不重试：重试也会扣次
     client = X.XtcClient(cfg, db, token or "MOCK", transport=transport)
     before = db.usage_on(client.provider)

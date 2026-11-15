@@ -89,7 +89,7 @@ def cmd_probe(args) -> int:
     from .sources.mock import MockXtcTransport
     cfg, db = _open(args)
     transport = MockXtcTransport(cfg.fee) if args.mock else None
-    out_dir = cfg.data_dir / "probe" if args.mock else (Path(args.config).resolve().parent / "docs")
+    out_dir = cfg.data_dir / ("probe" if args.mock else "reports")   # 运行产物放 data/，不写进源码的 docs/
     res = probe.run(cfg, db, secret("DFQ_XTC_TOKEN"), out_dir, transport=transport)
     if not res["ok"]:
         _print(*res["lines"])
@@ -107,7 +107,10 @@ def cmd_status(args) -> int:
            f"模式：{'模拟（paper_mode）' if cfg.paper else '实盘记账'}　执行器：{cfg.get('executor.mode')}", "")
     if cfg.notes:
         _print("配置提示：", *[f"  · {n}" for n in cfg.notes], "")
-    _print("环境变量（只显示是否已设置，不显示内容）：")
+    from . import envfile
+    env_path = envfile.path_for_config(args.config)
+    _print(f"密钥（只显示是否已设置，不显示内容）：来自系统环境变量或 {env_path}"
+           f"{'' if env_path.exists() else '（文件还不存在）'}")
     used_by = {"DFQ_XTC_TOKEN": "小涛查行情", "DFQ_LLM_API_KEY": "大模型", "DFQ_SMTP_PASSWORD": "发信授权码",
                "DFQ_IMAP_PASSWORD": "收信授权码（可不设，默认同发信）", "DFQ_TAVILY_API_KEY": "新闻搜索"}
     for name in SECRET_ENV_NAMES:
@@ -415,13 +418,14 @@ def cmd_watch(args) -> int:
 
 
 def cmd_gui(args) -> int:
-    from . import gui
-    return gui.main(config=args.config)
+    from .webui import app
+    return app.main(config=args.config)
 
 
 def cmd_init(args) -> int:
     dst = Path(args.config)
-    src = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    from .layout import resource
+    src = resource("config.example.yaml") or Path(__file__).resolve().parent.parent / "config.example.yaml"
     if dst.exists():
         _print(f"{dst} 已存在，没有覆盖。")
         return 0
@@ -429,7 +433,7 @@ def cmd_init(args) -> int:
         _print("找不到 config.example.yaml")
         return 1
     shutil.copyfile(src, dst)
-    _print(f"已生成 {dst}。请打开它填写邮箱等信息（密钥不要写进去，用环境变量）。")
+    _print(f"已生成 {dst}。请打开它填写邮箱等信息（密钥不要写进去，放在同一文件夹的 .env 里）。")
     return 0
 
 
@@ -523,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             pass
     parser = build_parser()
     args = parser.parse_args(argv)
+    from . import envfile
+    envfile.autoload(getattr(args, "config", None))   # 读取配置文件旁边的 .env（已有的环境变量优先）
     if not getattr(args, "fn", None):
         parser.print_help()
         return 0

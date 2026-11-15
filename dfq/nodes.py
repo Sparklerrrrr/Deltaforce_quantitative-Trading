@@ -71,7 +71,7 @@ class CollectMarket(Node):
             raise RuntimeError("xtc.enabled 为 false")
         client = xtc_client(ctx)
         if not ctx.mock and not ctx.dry_run and not client.token:
-            raise X.TokenMissing("未设置环境变量 DFQ_XTC_TOKEN")
+            raise X.TokenMissing("未设置 DFQ_XTC_TOKEN（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env）")
         res = collect.collect_market(ctx.cfg, ctx.db, client)
         ctx["watch"] = res["watch"]
         ctx["collect_stats"] = res

@@ -128,7 +128,7 @@ def fetch_news(cfg, db, api_key: str | None, transport=None) -> int:
     if provider != "tavily":
         raise ValueError(f"未实现的新闻搜索提供方: {provider}（可在 intel.py 的 fetch_news 里扩展）")
     if not api_key:
-        raise ValueError("已开启新闻搜索，但未设置环境变量 DFQ_TAVILY_API_KEY")
+        raise ValueError("已开启新闻搜索，但未设置 DFQ_TAVILY_API_KEY（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env）")
     register_secret(api_key)
     n = 0
     for q in cfg.get("intel.news.queries") or []:

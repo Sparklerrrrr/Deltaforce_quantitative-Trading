@@ -156,8 +156,9 @@ def test_parse_day_and_hour_curves():
     rows = X.parse_day_curve(day, ref)
     assert rows[0] == {"d": "2026-12-25", "price": 20923.0, "pmin": 16340.0, "pmax": 29240.0,
                        "min_at": "2026-12-25 03:12", "max_at": "2026-12-25 00:02"}
+    # 实测结构（2026-11-15 probe）：yc 与 a 等长、按下标对应，历史时段是字符串 "null"
     hour = {"data": {"a": ["12-26 14时", "12-26 15时", "12-26 16时", "12-26 17时"], "b": [100, 110],
-                     "max": [105, 111], "min": [99, 108], "yc": [120, 130]}}
+                     "max": [105, 111], "min": [99, 108], "yc": ["null", "null", 120, 130]}}
     rows = X.parse_hour_curve(hour, ref)
     assert [(r["ts"].hour, r["price"], r["forecast"]) for r in rows] == \
         [(14, 100.0, 0), (15, 110.0, 0), (16, 120.0, 1), (17, 130.0, 1)]

@@ -1,14 +1,14 @@
 # ============================================================================
 # dfq 配置文件示例。用法：复制一份改名为 config.yaml（或执行 python -m dfq init）
 #
-# ★ 密钥一律不写在这里，只从环境变量读取：
+# ★ 密钥一律不写在这里，放在同一文件夹的 .env 文件里（已加入 .gitignore，不会被提交）：
 #     DFQ_XTC_TOKEN        小涛查接口 token（必需）
 #     DFQ_LLM_API_KEY      大模型 API Key（开启 llm 时需要）
 #     DFQ_SMTP_PASSWORD    发信密码；QQ 邮箱填“授权码”（开启 mail 时需要）
 #     DFQ_IMAP_PASSWORD    收信密码；不设则与发信相同
 #     DFQ_TAVILY_API_KEY   新闻搜索 Key（开启 intel.news 时需要）
-#   Windows 设置方法（PowerShell，设完重开终端）：
-#     [Environment]::SetEnvironmentVariable("DFQ_XTC_TOKEN", "你的token", "User")
+#   填写方法：在 DFQ.exe 的“设置”页填；或复制 .env.example 为 .env，用记事本写成 DFQ_XTC_TOKEN=你的token
+#   系统环境变量里如果也有同名的，以系统环境变量为准。
 #
 # ★ 没写的项目都有默认值，所以这份文件可以只留你想改的那几行。
 #
@@ -108,6 +108,9 @@ llm:
   allow_http_local: false   # base_url 必须是 https://。唯一的例外：模型跑在本机
                             # （http://localhost 或 http://127.0.0.1），并且把这里改成 true。
                             # 远程地址、局域网地址用 http 一律拒绝（API Key 会被明文传输）
+  extra_body: {}            # 服务商专有的请求参数，原样合并进请求体。不能覆盖 model / messages / max_tokens 等。
+                            # 例：DeepSeek 默认开启“思考模式”，思考内容会占用 max_tokens 导致 JSON 被截断，
+                            #     可以关闭它：  extra_body: {thinking: {type: disabled}}
 
 # ---------------------------------------------------------------------------
 # 资讯与观点

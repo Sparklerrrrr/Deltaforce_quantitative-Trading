@@ -69,6 +69,9 @@ def test_md_label_variants():
     assert T.parse_md_label("12-23 16时", ref) == datetime(2026, 12, 23, 16)
     assert T.parse_md_label("12-23 16:57分", ref) == datetime(2026, 12, 23, 16, 57)
     assert T.parse_md_label("11-27", ref) == datetime(2026, 11, 27)
+    # 实测格式：日期和小时之间夹着星期几（以前会丢掉小时，整天的数据都算成零点）
+    assert T.parse_md_label("12-23 周三 16时", ref) == datetime(2026, 12, 23, 16)
+    assert T.parse_md_label("12-23 星期日 05时", ref) == datetime(2026, 12, 23, 5)
     assert T.parse_md_label("abc", ref) is None
 
 

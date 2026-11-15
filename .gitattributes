@@ -4,3 +4,5 @@
 *.py  text eol=lf
 *.md  text eol=lf
 *.yaml text eol=lf
+# Inno Setup 脚本：带 BOM 的 UTF-8 + CRLF
+*.iss text eol=crlf

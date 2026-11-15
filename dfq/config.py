@@ -95,6 +95,7 @@ DEFAULTS: dict[str, Any] = {
         "temperature": None,
         "json_mode": True,
         "allow_http_local": False,   # 只有模型跑在本机（localhost/127.0.0.1）时才可能需要打开
+        "extra_body": {},            # 服务商专有的请求参数，原样合并进请求体（如 DeepSeek 关闭思考模式）
     },
     "intel": {
         "bilibili": {

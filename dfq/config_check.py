@@ -58,6 +58,9 @@ def OPT(rule):                       # 允许 null
 
 FREE = ("free",)                     # 结构另行检查
 
+# llm.extra_body 不能覆盖的字段：模型、消息、流式（会破坏解析）、以及已有专门配置项的参数
+LLM_RESERVED_KEYS = {"model", "messages", "stream", "max_tokens", "temperature", "response_format"}
+
 SPEC: dict[str, tuple] = {
     "general.data_dir": S(),
     "general.paper_mode": B(),
@@ -114,6 +117,7 @@ SPEC: dict[str, tuple] = {
     "llm.temperature": OPT(N(0, 2)),
     "llm.json_mode": B(),
     "llm.allow_http_local": B(),
+    "llm.extra_body": FREE,
 
     "intel.bilibili.enabled": B(),
     "intel.bilibili.ups": FREE,
@@ -262,6 +266,16 @@ def _get(data: dict, dotted: str) -> tuple[bool, Any]:
 
 
 def _check_free(data: dict, out: list[str]) -> None:
+    # —— 大模型附加参数：只能补充，不能改掉程序自己控制的字段 ——
+    ok, extra = _get(data, "llm.extra_body")
+    if ok and extra is not None:
+        if not isinstance(extra, dict):
+            out.append(f"llm.extra_body 应该是一组键值（例如 {{thinking: {{type: disabled}}}}），现在是 {_fmt(extra)}")
+        else:
+            reserved = sorted(set(map(str, extra)) & LLM_RESERVED_KEYS)
+            if reserved:
+                out.append(f"llm.extra_body 里不能设置 {', '.join(reserved)}：这些由程序或 llm 的其他配置项控制")
+
     # —— 关注清单 ——
     wl = data.get("watchlist")
     if not isinstance(wl, list) or not wl:

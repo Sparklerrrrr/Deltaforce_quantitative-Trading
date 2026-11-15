@@ -27,6 +27,7 @@ def _no_network_no_secrets(monkeypatch):
     for k in list(os.environ):
         if k.startswith("DFQ_"):
             monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("DFQ_DOTENV", "0")          # 不读项目里真实的 .env，测试拿不到你的密钥
     timeutil.set_now("2026-11-13 21:30:00")
     yield
     timeutil.set_now(None)

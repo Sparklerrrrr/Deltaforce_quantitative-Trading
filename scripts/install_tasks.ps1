@@ -1,14 +1,14 @@
 ﻿<#
 .SYNOPSIS
-    创建 dfq 的 Windows 计划任务。（未在真实 Windows 上实测，首次使用请看下面的“验证”）
+    创建 dfq 的 Windows 计划任务。（未在真实 Windows 上实测，首次使用请看下面的「验证」）
 
 .DESCRIPTION
     会创建两个任务（当前用户、无需管理员）：
       dfq-nightly    每晚定时运行主流程      python -m dfq run
       dfq-mail-poll  每隔一段时间读取邮件回复  python -m dfq mail-poll
-    加 -WithWatch 时再创建一个默认“禁用”的任务：
+    加 -WithWatch 时再创建一个默认「禁用」的任务：
       dfq-watch      每小时异常波动检查      python -m dfq watch
-    任务只在你登录时运行；moligod 同步需要打开浏览器窗口，所以不要改成“不管用户是否登录都运行”。
+    任务只在你登录时运行；moligod 同步需要打开浏览器窗口，所以不要改成「不管用户是否登录都运行」。
 
 .EXAMPLE
     # 在项目根目录打开 PowerShell：
@@ -25,7 +25,8 @@ param(
     [string]$NightlyAt = "21:30",
     [int]$PollMinutes = 30,
     [switch]$WithWatch,
-    [switch]$Remove
+    [switch]$Remove,
+    [string]$Exe = ""          # 安装版：直接调用 DFQ.exe（不需要 .venv），例如 -Exe "D:\DFQ\DFQ.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,12 +44,20 @@ if ($Remove) {
     return
 }
 
-if (-not (Test-Path $bat)) { throw "找不到 $bat" }
-if (-not $env:DFQ_XTC_TOKEN) {
-    Write-Warning "当前终端里没有 DFQ_XTC_TOKEN。请确认已设置为“用户环境变量”，否则计划任务拿不到行情。"
+if ($Exe) {
+    if (-not (Test-Path $Exe)) { throw "找不到 $Exe" }
+    $root = Split-Path -Parent $Exe
+} elseif (-not (Test-Path $bat)) { throw "找不到 $bat" }
+$envFile = Join-Path $root ".env"
+$inEnvFile = (Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^\s*DFQ_XTC_TOKEN\s*=\s*\S' -Quiet)
+if (-not $env:DFQ_XTC_TOKEN -and -not $inEnvFile) {
+    Write-Warning "没有找到 DFQ_XTC_TOKEN。请在 DFQ.exe 的「设置」页填写（保存在程序文件夹的 .env），否则计划任务拿不到行情。"
 }
 
 function New-DfqAction([string]$subcommand) {
+    if ($Exe) {   # 安装版：DFQ.exe 带参数就是命令行模式，输出写到 data\logs\task-日期.log
+        return New-ScheduledTaskAction -Execute $Exe -Argument $subcommand -WorkingDirectory $root
+    }
     # 路径带空格：整体用引号包住
     New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"`"$bat`" $subcommand`"" -WorkingDirectory $root
 }

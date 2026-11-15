@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; font-src 'self' file:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- 安全策略：只允许加载本地文件，禁止任何网络连接（connect-src none），即使页面被注入脚本也无法把数据发出去 -->
+<title>DFQ 子弹交易决策助手</title>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-page="home">首页</button>
+      <button class="tab" data-page="plan">最新计划</button>
+      <button class="tab" data-page="ledger">记账</button>
+      <button class="tab" data-page="review">复盘</button>
+      <button class="tab" data-page="intel">资讯录入</button>
+      <button class="tab" data-page="settings">设置</button>
+    </nav>
+    <div class="brand">
+      <span class="brand-name">DFQ</span>
+      <span class="brand-sub">子弹交易决策助手 <span id="version"></span></span>
+      <button class="icon-btn" id="theme-btn" title="切换深色 / 浅色"></button>
+    </div>
+  </header>
+
+  <main class="body">
+    <section class="pages">
+      <!-- 首页：任务清单由 tasks.py 生成 -->
+      <div class="page active" data-page="home">
+        <div class="task-list" id="home-tasks"></div>
+        <div class="page-foot">
+          <label class="check"><input type="checkbox" id="force"><span>忽略运行间隔</span></label>
+          <span class="muted">第一次使用：先“演示一遍” → 到“设置”填写 token → 回来做“接口实测”</span>
+        </div>
+      </div>
+
+      <div class="page" data-page="plan">
+        <div class="card grow">
+          <div class="card-head">
+            <h3>最新计划</h3><span class="hint">内容与邮件相同；过期的计划会标明作废</span>
+            <div class="spacer"></div>
+            <button class="btn" data-action="plan">刷新</button>
+          </div>
+          <pre class="output" id="out-plan" data-empty="还没有计划。先在首页运行一次，或点右上角“刷新”。"></pre>
+        </div>
+      </div>
+
+      <div class="page" data-page="ledger">
+        <div class="card">
+          <div class="card-head"><h3>记一笔成交</h3></div>
+          <div class="form-row">
+            <div class="field"><label>方向</label>
+              <div class="segmented" id="side">
+                <button class="seg active" data-value="buy">买入</button>
+                <button class="seg" data-value="sell">卖出</button>
+              </div>
+            </div>
+            <div class="field grow-field"><label>品种</label><input id="item" list="items" placeholder="选择或输入"><datalist id="items"></datalist></div>
+          </div>
+          <div class="form-row second">
+            <div class="field"><label>数量</label><input id="qty" inputmode="numeric" placeholder="0"></div>
+            <div class="field"><label>成交单价</label><input id="price" inputmode="decimal" placeholder="0"></div>
+            <div class="field"><label>账本</label><label class="check"><input type="checkbox" id="paper" checked><span>模拟成交</span></label></div>
+            <div class="field end"><button class="btn primary" id="trade-btn">记账</button></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>哈夫币余额</h3><span class="hint">之后的真实成交会在此基础上自动加减</span></div>
+          <div class="form-row">
+            <div class="field"><label>当前游戏里的余额</label><input id="balance" inputmode="decimal" placeholder="例如 3,000,000"></div>
+            <div class="field end"><button class="btn" id="balance-btn">设为余额基准</button></div>
+            <div class="field end"><button class="btn" data-action="balance">查看余额</button></div>
+          </div>
+        </div>
+        <div class="card grow">
+          <div class="card-head">
+            <h3>最近成交</h3><span class="hint">两本账都在这里，点一行选中</span>
+            <div class="spacer"></div>
+            <button class="btn" id="trades-refresh">刷新</button>
+            <button class="btn danger" id="undo-btn">撤销选中的成交</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>编号</th><th>时间</th><th>方向</th><th>品种</th><th class="num">数量</th><th class="num">单价</th><th>账本</th><th>来源</th><th>备注</th></tr></thead>
+              <tbody id="trades"></tbody>
+            </table>
+            <div class="empty" id="trades-empty">还没有成交记录</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" data-page="review">
+        <div class="task-list" id="review-tasks"></div>
+        <div class="task">
+          <div class="task-icon" data-icon="check"></div>
+          <div class="task-title">处理建议</div>
+          <div class="task-chips"><label class="inline-field"><span>编号</span><input id="reflect-id" class="small" inputmode="numeric" placeholder="#"></label></div>
+          <div class="task-actions">
+            <button class="btn" id="reflect-show">查看</button>
+            <button class="btn primary" id="reflect-accept">采纳（下次运行生效）</button>
+            <button class="btn" id="reflect-reject">不采纳</button>
+          </div>
+        </div>
+        <div class="card grow">
+          <div class="card-head"><h3>结果</h3></div>
+          <pre class="output mono" id="out-review" data-empty="点上面的按钮，结果显示在这里。"></pre>
+        </div>
+      </div>
+
+      <div class="page" data-page="intel">
+        <div class="card grow">
+          <div class="card-head"><h3>录入资讯</h3><span class="hint">像是在对 AI 下指令的文字会被自动隔离</span></div>
+          <div class="form-row">
+            <div class="field"><label>来源</label>
+              <select id="src"><option value="bili">B 站</option><option value="qq">QQ 群</option><option value="news">新闻</option><option value="other">其他</option></select>
+            </div>
+            <div class="field wide"><label>信源名（UP 主 / 群名）</label><input id="src-name" placeholder="同一信源始终用同一个名字"></div>
+            <div class="field wide"><label>标题（可不填）</label><input id="src-title"></div>
+          </div>
+          <textarea id="note-text" placeholder="把视频文字稿、群聊记录、公告粘贴到这里"></textarea>
+          <div class="row-actions">
+            <button class="btn primary" id="note-btn">保存入库</button>
+            <button class="btn" data-action="note_list">查看已录入</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" data-page="settings">
+        <div class="card">
+          <div class="card-head"><h3>常规</h3><span class="hint">点右上角 × 关闭窗口时怎么处理；关闭提示里勾选“记住我的选择”后，也可以在这里改回来</span></div>
+          <div class="kv">
+            <span class="k">关闭窗口时</span>
+            <div class="segmented" id="close-action">
+              <button class="seg" data-value="ask">每次询问</button>
+              <button class="seg" data-value="tray">最小化到托盘</button>
+              <button class="seg" data-value="quit">退出程序</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>密钥</h3><span class="hint" id="secret-where"></span></div>
+          <div class="secret-list" id="secrets"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>配置文件</h3><span class="hint">改完保存后点“检查配置”；比例一律写小数：5% 写 0.05</span></div>
+          <div class="path" id="config-path"></div>
+          <div class="row-actions">
+            <button class="btn" data-action="init">生成 config.yaml</button>
+            <button class="btn" data-open="config">用记事本打开</button>
+            <button class="btn" id="check-config">检查配置</button>
+            <button class="btn" id="reset-config">恢复默认配置…</button>
+            <button class="btn" data-open="data">打开数据文件夹</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>配置导入 / 导出</h3><span class="hint">换电脑、重装后用它快速恢复设置</span></div>
+          <div class="io-grid">
+            <label class="dropzone" id="dropzone" tabindex="0">
+              <input type="file" id="import-file" accept=".zip,.yaml,.yml,.env" hidden>
+              <span class="dz-icon" data-icon="import"></span>
+              <span class="dz-title">把配置文件拖到这里，或点击选择</span>
+              <span class="dz-sub">支持本程序导出的 .zip、config.yaml、.env。导入前会先检查，旧文件自动备份到 data\backups</span>
+            </label>
+            <div class="io-export">
+              <div class="io-title">导出当前配置</div>
+              <p class="hint">导出为一个 .zip 文件，点按钮后选择保存到哪个文件夹。</p>
+              <label class="check"><input type="checkbox" id="export-secrets"><span>同时导出密钥（.env，明文）</span></label>
+              <button class="btn primary" id="export-config">导出配置…</button>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>其他</h3><span class="hint">计划任务每晚自动运行，与本程序共用同一份数据</span></div>
+          <div class="row-actions">
+            <button class="btn" data-action="moligod_login">登录 moligod（需要 Playwright）</button>
+            <button class="btn" id="install-tasks">创建 Windows 计划任务</button>
+            <button class="btn" data-open="docs">打开文档文件夹</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="card">
+        <div class="card-head"><h3>运行环境</h3></div>
+        <div class="kv">
+          <span class="k">数据来源</span>
+          <div class="segmented small" id="source">
+            <button class="seg" data-value="mock">模拟数据</button>
+            <button class="seg" data-value="real">真实行情</button>
+          </div>
+        </div>
+        <p class="hint block" id="source-desc"></p>
+        <div class="divider"></div>
+        <div class="kv"><span class="k">记账模式</span><span class="v" id="mode"></span></div>
+        <div class="kv"><span class="k">今日接口</span><span class="v" id="usage"></span></div>
+        <div class="kv"><span class="k">功能</span><span class="v feat" id="features"></span></div>
+        <div class="kv"><span class="k">状态</span><span class="v" id="status"><i class="dot"></i><span>就绪</span></span></div>
+        <button class="btn primary full hidden" id="continue-btn">我已完成，继续</button>
+      </div>
+      <div class="card grow log-card">
+        <div class="card-head">
+          <h3>运行日志</h3>
+          <div class="spacer"></div>
+          <button class="icon-btn" id="export-btn" title="导出日志（反馈问题时发这个文件）"></button>
+          <button class="icon-btn" id="clear-btn" title="清空"></button>
+        </div>
+        <pre class="log" id="log" data-empty="暂无日志"></pre>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div class="modal-mask hidden" id="modal">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <div class="modal-text" id="modal-text"></div>
+    <input class="hidden" id="modal-input" type="password" autocomplete="off" spellcheck="false">
+    <div class="modal-actions">
+      <button class="btn" id="modal-cancel">取消</button>
+      <button class="btn primary" id="modal-ok">确定</button>
+    </div>
+  </div>
+</div>
+<div class="modal-mask hidden" id="close-modal">
+  <div class="modal">
+    <h3>关闭 DFQ</h3>
+    <div class="modal-text" id="close-text">要把程序最小化到托盘继续在后台运行，还是直接退出？</div>
+    <div class="close-choices">
+      <button class="choice" id="close-tray">
+        <span class="choice-title">最小化到托盘</span>
+        <span class="choice-sub">窗口隐藏，程序继续运行；双击托盘图标可以重新打开</span>
+      </button>
+      <button class="choice" id="close-quit">
+        <span class="choice-title">退出程序</span>
+        <span class="choice-sub">完全关闭 DFQ</span>
+      </button>
+    </div>
+    <label class="check remember"><input type="checkbox" id="close-remember"><span>记住我的选择，下次不再提醒（可以在“设置”页修改）</span></label>
+    <div class="modal-actions"><button class="btn" id="close-cancel">取消</button></div>
+  </div>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

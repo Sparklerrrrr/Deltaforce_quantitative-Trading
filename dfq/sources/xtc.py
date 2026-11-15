@@ -98,7 +98,7 @@ class XtcClient:
         if self.cache_only:
             raise XtcError(f"{endpoint}：dry-run 模式不发真实请求（缓存里没有可用数据）")
         if not self.token:
-            raise TokenMissing("未设置环境变量 DFQ_XTC_TOKEN，无法请求小涛查接口")
+            raise TokenMissing("未设置 DFQ_XTC_TOKEN（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env），无法请求小涛查接口")
 
         cost = self._cost(endpoint)
 
@@ -237,9 +237,9 @@ def parse_hour_curve(resp: dict, ref: datetime) -> list[dict]:
                          "pmin": _num(mn[i]) if i < len(mn) else None,
                          "pmax": _num(mx[i]) if i < len(mx) else None, "forecast": 0})
         elif yc:
-            # 开启预测时结构会变（文档原话）；未实测。这里按“超出 b 长度的标签对应 yc”处理。
-            j = i - len(b)
-            pv = _num(yc[j]) if 0 <= j < len(yc) else None
+            # 实测（2026-11-15 probe）：isYC=1 时 a 和 yc 等长、按下标一一对应；
+            # 历史时段 yc 是字符串 "null"，b 结束之后的标签才是预测值。
+            pv = _num(yc[i]) if i < len(yc) else None
             if pv is not None:
                 rows.append({"ts": t, "price": pv, "pmin": None, "pmax": None, "forecast": 1})
     return rows

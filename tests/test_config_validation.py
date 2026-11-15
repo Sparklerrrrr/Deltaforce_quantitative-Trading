@@ -36,6 +36,13 @@ def test_defaults_and_example_file_are_valid():
     assert C.check(deep_merge(DEFAULTS, ex)) == []
 
 
+def test_llm_extra_body_must_be_a_mapping_without_reserved_keys():
+    assert C.check(data(llm__extra_body={"thinking": {"type": "disabled"}})) == []
+    assert "llm.extra_body 应该是一组键值" in problems(llm__extra_body="thinking=off")
+    msg = problems(llm__extra_body={"model": "x", "max_tokens": 99999})
+    assert "llm.extra_body 里不能设置 max_tokens, model" in msg
+
+
 def test_every_default_setting_has_a_rule():
     """新增配置项却忘了写校验规则 → 这个测试会失败。"""
     def leaves(d, prefix=""):

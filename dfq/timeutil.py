@@ -57,7 +57,8 @@ def fmt_min(dt: datetime) -> str:
 
 
 _RE_MINUTE = re.compile(r"^\s*(\d{1,2})\s+(\d{1,2})[:：](\d{1,2})")
-_RE_MD = re.compile(r"^\s*(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2})(?:[:：](\d{1,2}))?)?")
+# 实测（2026-11-15 probe）：小时曲线的标签是 "11-15 周六 20时"，日期和小时之间夹着星期几
+_RE_MD = re.compile(r"^\s*(\d{1,2})-(\d{1,2})(?:\s+(?:周|星期)[一二三四五六日天])?(?:\s+(\d{1,2})(?:[:：](\d{1,2}))?)?")
 
 
 def _date_with_day(anchor: date, day: int, max_back: int = 3, forward: int = 0) -> date | None:

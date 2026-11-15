@@ -1,6 +1,6 @@
 """大模型分析（兼容 OpenAI 格式的 /chat/completions）。
 
-- base_url / model 在 config.yaml 里配，api_key 走环境变量 DFQ_LLM_API_KEY。
+- base_url / model 在 config.yaml 里配，api_key 走环境变量或 .env 里的 DFQ_LLM_API_KEY。
 - 只喂结构化特征和整理后的观点摘要，不喂原始网页。
 - 要求模型输出严格 JSON；解析或校验失败就整体回退到规则基线。
 - 模型的输出只是“建议”，之后还要过 guardrails.apply()，它绕不过护栏。
@@ -124,7 +124,7 @@ class LLMClient:
         if self.url_error:
             return self.url_error
         if not self.api_key:
-            return "未设置环境变量 DFQ_LLM_API_KEY"
+            return "未设置 DFQ_LLM_API_KEY（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env）"
         return ""
 
     def chat_json(self, system: str, user: str) -> dict:
@@ -139,6 +139,10 @@ class LLMClient:
             body["temperature"] = float(self.cfg.get("llm.temperature"))
         if self.cfg.get("llm.json_mode", True):
             body["response_format"] = {"type": "json_object"}
+        extra = self.cfg.get("llm.extra_body") or {}
+        if isinstance(extra, dict):                  # 配置检查已拦下保留字段；这里再保险一次，不覆盖已有字段
+            for k, v in extra.items():
+                body.setdefault(str(k), v)
         try:
             resp = request_json(
                 "POST", f"{self.base_url}/chat/completions", json_body=body,
@@ -150,11 +154,17 @@ class LLMClient:
             raise LLMError(f"模型请求失败: {e}") from None
         try:
             content = resp["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
+            finish = resp["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
             raise LLMError("模型响应结构不符合 OpenAI 格式") from None
+        usage = resp.get("usage") or {}
+        if finish == "length":
+            raise LLMError(f"模型输出达到 llm.max_tokens（{body['max_tokens']}）上限被截断"
+                           f"（本次用了 {usage.get('completion_tokens', '?')} 个输出 token）。"
+                           "如果服务商默认开启“思考模式”，思考内容也会占用这个额度："
+                           "可以调大 llm.max_tokens，或在 llm.extra_body 里关闭思考模式")
         if isinstance(content, list):   # 个别兼容实现把内容拆成片段
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-        usage = resp.get("usage") or {}
         event(log, logging.INFO, "模型调用完成", model=self.model,
               prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"))
         return parse_json_loose(content)

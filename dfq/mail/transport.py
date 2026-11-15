@@ -174,7 +174,7 @@ class SmtpImapTransport(MailTransport):
         if not (host and user and self.sender and to):
             raise MailError("邮件配置不完整：需要 mail.smtp_host / smtp_user / from_address / owner_address")
         if not self.smtp_password:
-            raise MailError("未设置环境变量 DFQ_SMTP_PASSWORD（QQ 邮箱填“授权码”，不是登录密码）")
+            raise MailError("未设置 DFQ_SMTP_PASSWORD（QQ 邮箱填“授权码”，不是登录密码；在“设置”页或 .env 里填写）")
         msg = build_message(subject, body, sender=self.sender, to=to, in_reply_to=in_reply_to,
                             extra_headers=headers)
         ctx = ssl.create_default_context()
@@ -197,7 +197,7 @@ class SmtpImapTransport(MailTransport):
         if not (host and user):
             raise MailError("邮件配置不完整：需要 mail.imap_host / imap_user")
         if not self.imap_password:
-            raise MailError("未设置环境变量 DFQ_IMAP_PASSWORD 或 DFQ_SMTP_PASSWORD")
+            raise MailError("未设置 DFQ_IMAP_PASSWORD 或 DFQ_SMTP_PASSWORD（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env）")
         out: list[InboundMail] = []
         try:
             conn = imaplib.IMAP4_SSL(host, port, ssl_context=ssl.create_default_context(), timeout=30)

@@ -1,5 +1,10 @@
 # 必需
 PyYAML>=6.0
+# 图形界面（DFQ.exe / python -m dfq gui）：用 Windows 自带的 Edge WebView2 显示
+pywebview>=5
+# 系统托盘图标（关闭窗口时可以最小化到托盘）
+pystray>=0.19
+Pillow>=10
 # 可选：moligod 提醒同步（python -m playwright install chromium）
 # playwright>=1.44
 # 可选：本地语音转写（B 站无字幕时）
