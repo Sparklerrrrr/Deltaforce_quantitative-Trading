@@ -43,21 +43,15 @@ jobs:
       - name: Inno Setup 6.5 or newer
         shell: pwsh
         run: |
-          function Find-Iscc {
-            $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
-            Get-ItemProperty $k -ErrorAction SilentlyContinue |
-              Where-Object { $_.DisplayName -like 'Inno Setup*' -and $_.InstallLocation } |
-              ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
-          function Ver($p) { $v = (Get-Item $p).VersionInfo; [version]"$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)" }
-          $iscc = Find-Iscc
-          if (-not $iscc -or (Ver $iscc) -lt [version]'6.5.0') {
-            choco install innosetup -y --no-progress
-            $iscc = Find-Iscc
-          }
-          if (-not $iscc -or (Ver $iscc) -lt [version]'6.5.0') { throw 'Inno Setup 6.5 or newer is required' }
+          choco install innosetup -y --no-progress
+          $candidates = @('C:\Program Files\Inno Setup 6\ISCC.exe','C:\Program Files (x86)\Inno Setup 6\ISCC.exe')
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+          if (-not $iscc) { throw 'ISCC.exe not found after install' }
+          $v = (Get-Item $iscc).VersionInfo
+          $version = [version]"$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)"
+          if ($version -lt [version]'6.5.0') { throw "Inno Setup 6.5+ required; found $version" }
+          Write-Output "Inno Setup $version at $iscc"
           "DFQ_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "INNO_VERSION=$(Ver $iscc)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
