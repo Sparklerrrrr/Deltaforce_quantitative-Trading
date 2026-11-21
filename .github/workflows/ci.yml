@@ -54,7 +54,7 @@ jobs:
       - name: ruff (only real errors; rules in pyproject.toml)
         run: python -m ruff check .
       - name: vermin (code must still run on Python 3.11)
-        run: python -m vermin --no-tips --eval-annotations -t=3.11- --violations dfq scripts tests
+        run: vermin --no-tips --eval-annotations -t=3.11- --violations dfq scripts tests
       - name: mypy (blocking, files that are already clean)
         run: >-
           python -m mypy --follow-imports=silent
