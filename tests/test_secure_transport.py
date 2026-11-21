@@ -12,7 +12,7 @@ from dfq import log as LOG
 from dfq.http import HttpError, InsecureUrl, check_secure_url, is_loopback_host, request_json
 from dfq.sources import xtc as X
 
-KEY = "sk-live-9f8e7d6c5b4a39281706"
+KEY = "sk-dummy-test-9f8e7d6c5b4a39281706"
 
 
 def make(cfg, base_url, allow_local=False, transport=None):

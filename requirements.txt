@@ -1,3 +1,4 @@
+# 运行需要的依赖（DFQ.exe 打包的也是这些）。开发 / 测试另装 requirements-dev.txt。
 # 必需
 PyYAML>=6.0
 # 图形界面（DFQ.exe / python -m dfq gui）：用 Windows 自带的 Edge WebView2 显示
@@ -9,5 +10,3 @@ Pillow>=10
 # playwright>=1.44
 # 可选：本地语音转写（B 站无字幕时）
 # faster-whisper>=1.0
-# 开发 / 测试
-pytest>=8.0

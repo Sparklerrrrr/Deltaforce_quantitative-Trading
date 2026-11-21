@@ -1,6 +1,5 @@
 """端到端：用模拟行情把整条流水线跑通（不联网，不花次数）。"""
 import json
-from datetime import timedelta
 
 import pytest
 import yaml

@@ -1,0 +1,120 @@
+# 正式发布：推送 v* 标签（例如 v1.0.1）时，在 GitHub 的 Windows 机器上从干净的检出构建安装包，
+# 验收、扫描、算校验值，然后建一个“草稿”Release，由维护者核对后手动点“发布”。流程说明见 docs/发布流程.md。
+# 注意：这个文件写好后还没有在 GitHub 上实际运行过（2026-11-21）；第一次发布时请盯着 Actions 页面的日志。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write              # 创建 Release、上传文件
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Tag must match dfq.__version__
+        shell: pwsh
+        run: |
+          $ver = python -c "import dfq; print(dfq.__version__)"
+          if ("v$ver" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match dfq.__version__ = $ver" }
+          "DFQ_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Tests
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pytest -q -p no:cacheprovider
+
+      - name: Secret scan of the source and the full Git history
+        run: python scripts/scan_secrets.py --tree --history --json scan-repo.json
+
+      - name: Inno Setup 6.5 or newer
+        shell: pwsh
+        run: |
+          function Find-Iscc {
+            $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            Get-ItemProperty $k -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -like 'Inno Setup*' -and $_.InstallLocation } |
+              ForEach-Object { Join-Path $_.InstallLocation 'ISCC.exe' } | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          function Ver($p) { $v = (Get-Item $p).VersionInfo; [version]"$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)" }
+          $iscc = Find-Iscc
+          if (-not $iscc -or (Ver $iscc) -lt [version]'6.5.0') {
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc -or (Ver $iscc) -lt [version]'6.5.0') { throw 'Inno Setup 6.5 or newer is required' }
+          "DFQ_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "INNO_VERSION=$(Ver $iscc)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build (same script as a local build)
+        shell: cmd
+        env:
+          CI: "true"
+          DFQ_REQUIRE_INSTALLER: "1"
+        run: scripts\build_exe.bat
+
+      - name: Scan the program folder
+        run: python scripts/scan_secrets.py --dir dist/DFQ --json scan-dist.json
+
+      - name: Acceptance test of the installer
+        shell: pwsh
+        run: |
+          $setup = "dist\DFQ-Setup-$env:DFQ_VERSION.exe"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_test.ps1 -Setup $setup `
+            -Dir "$env:RUNNER_TEMP\dfq-release-test" -ScanScript scripts\scan_secrets.py -SkipGui | Tee-Object release-test.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Checksums and build record
+        shell: pwsh
+        run: |
+          New-Item release -ItemType Directory -Force | Out-Null
+          $setup = "DFQ-Setup-$env:DFQ_VERSION.exe"
+          Copy-Item "dist\$setup" "release\$setup"
+          $h = (Get-FileHash "release\$setup" -Algorithm SHA256).Hash.ToLower()
+          # 与 sha256sum 相同的格式：在 Git Bash 里可以直接 sha256sum -c SHA256SUMS.txt
+          [IO.File]::WriteAllText("$PWD\release\SHA256SUMS.txt", "$h *$setup`n")
+          $info = @(
+            "DFQ $env:DFQ_VERSION",
+            "tag: ${{ github.ref_name }}",
+            "commit: ${{ github.sha }}",
+            "workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+            "built: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC on $([Environment]::OSVersion.VersionString)",
+            "python: $(python --version)",
+            "inno setup: $env:INNO_VERSION",
+            "installer sha256: $h",
+            "",
+            "installed python packages (.venv used for the build):"
+          ) + (& .venv\Scripts\python.exe -m pip freeze)
+          [IO.File]::WriteAllLines("$PWD\release\build-info.txt", $info)
+          Copy-Item release-test.txt, scan-repo.json, scan-dist.json release\
+          Get-Content release\SHA256SUMS.txt
+
+      - name: Create a draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $notes = @"
+          Windows installer for DFQ $env:DFQ_VERSION, built by GitHub Actions from commit ${{ github.sha }}.
+
+          Before installing, check the download against SHA256SUMS.txt (see docs/安装说明.md).
+          build-info.txt lists the exact build environment; release-test.txt and scan-*.json are the acceptance test and secret scan results.
+          "@
+          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "DFQ $env:DFQ_VERSION" --notes $notes `
+            "release\DFQ-Setup-$env:DFQ_VERSION.exe" release\SHA256SUMS.txt release\build-info.txt `
+            release\release-test.txt release\scan-repo.json release\scan-dist.json

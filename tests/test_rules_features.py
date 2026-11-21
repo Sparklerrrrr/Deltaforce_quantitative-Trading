@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from dfq import features as F, fees, rules
+from dfq import features as F, rules
 
 NOW = datetime(2026, 11, 13, 21, 30)
 ITEM = {"oid": 626, "name": "12.7x55mm PS12B", "grade": 5}
@@ -40,7 +40,9 @@ def test_features_from_minute_history(cfg, db):
     assert 0 in f["low_hours"] or 23 in f["low_hours"]       # 低点在零点附近
     assert 12 in f["high_hours"] or 11 in f["high_hours"]
     assert f["amp_avg"] == pytest.approx((4400 - 3400) / 3400, abs=0.02)
-    assert f["trend_7d"] == -2.0 and f["implied_fee"] == pytest.approx(0.14, abs=0.001)
+    # 秒出价折让（旧名 implied_fee 把它误当成费率，已改名）
+    assert f["trend_7d"] == -2.0 and f["quick_sell_discount"] == pytest.approx(0.14, abs=0.001)
+    assert "implied_fee" not in f
     assert 0 <= f["pct_rank"] <= 1
 
 
@@ -101,8 +103,10 @@ def test_stop_line_takes_the_lower_of_two(cfg):
     assert rules.stop_line(cfg, 3600, 3500) == 3240
 
 
-def test_fee_check_warns_only_on_large_gap(cfg):
-    assert F.fee_check(cfg, [{"implied_fee": 0.14}, {"implied_fee": 0.135}]) is None
-    msg = F.fee_check(cfg, [{"implied_fee": 0.20}, {"implied_fee": 0.21}, {"implied_fee": None}])
-    assert msg and "20" in msg
+def test_fee_check_no_longer_treats_quick_sell_price_as_fee(cfg):
+    """秒出价不是扣费后的到手价：真实数据里折让只有约 2%，旧版据此报“与 13% 相差较大”是误报。"""
+    assert F.fee_check(cfg, [{"quick_sell_discount": 0.014}, {"quick_sell_discount": 0.027}]) is None   # 真实常见值：不提示
+    msg = F.fee_check(cfg, [{"quick_sell_discount": 0.20}, {"quick_sell_discount": 0.20},
+                            {"quick_sell_discount": None}])
+    assert msg and "20%" in msg and "不是手续费" in msg and "13%" not in msg
     assert F.fee_check(cfg, [{}]) is None

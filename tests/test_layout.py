@@ -28,14 +28,14 @@ def test_bootstrap_creates_layout_and_templates(tmp_path):
 
 def test_bootstrap_never_overwrites_existing_files(tmp_path):
     (tmp_path / "config.yaml").write_text("general:\n  data_dir: data\n# 我的设置\n", encoding="utf-8")
-    (tmp_path / ".env").write_text("DFQ_XTC_TOKEN=my-real-token-123\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("DFQ_XTC_TOKEN=dummy-test-token-0000\n", encoding="utf-8")
     db = tmp_path / "data" / "dfq.db"
     db.parent.mkdir()
     db.write_bytes(b"trade records")
     for _ in range(3):                                                        # 重复启动
         layout.bootstrap(tmp_path)
     assert "# 我的设置" in (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert "my-real-token-123" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "dummy-test-token-0000" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert db.read_bytes() == b"trade records"
     assert layout.bootstrap(tmp_path) == []                                   # 第二次起什么都不新建
 
@@ -84,7 +84,7 @@ def test_uninstaller_keep_lists_match_layout():
 
 def test_installer_does_not_ship_personal_files():
     src = (ROOT / "installer" / "DFQ.iss").read_text(encoding="utf-8-sig")
-    files = [l for l in src.splitlines() if l.startswith("Source:")]
+    files = [line for line in src.splitlines() if line.startswith("Source:")]
     joined = "\n".join(files)
     assert "config.yaml" not in joined.replace("config.example.yaml", "")
     assert ".env\"" not in joined and ".env;" not in joined                  # 只带 .env.example

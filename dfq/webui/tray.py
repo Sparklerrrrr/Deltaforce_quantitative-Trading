@@ -84,3 +84,13 @@ class Tray:
             except Exception:
                 pass
             self._icon = None
+
+    def notify(self, text: str, title: str = "DFQ") -> None:
+        """窗口收在托盘里时弹一条系统通知（例如后台任务结束）。失败就算了。"""
+        icon = self._icon
+        if icon is None:
+            return
+        try:
+            icon.notify(text, title)
+        except Exception:
+            pass

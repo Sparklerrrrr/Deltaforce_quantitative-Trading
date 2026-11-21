@@ -18,13 +18,18 @@
         ├── overrides.yaml         【用户数据】你采纳的反思调参
         ├── plans/ outbox/ inbox/  【用户数据】历次计划、计划邮件正文、邮件回复
         ├── reflections/ reports/  【用户数据】反思记录、接口实测报告
-        ├── backups/               【用户数据】导入配置前的自动备份
+        ├── backups/               【用户数据】改配置 / 导入配置前的备份；backups/db/ 是数据库备份（卸载时随 backups/ 保留）
         ├── moligod_profile/       【登录状态】moligod 浏览器登录信息（等同凭据）
         ├── cache/ probe/          【缓存】接口缓存、实测原始返回，可以随时删除
         ├── webview/               【缓存】界面浏览器组件的数据
-        ├── logs/ exports/         【日志】运行日志、导出的日志包
+        ├── logs/ exports/         【日志】运行日志、导出的日志包（只是日志的副本，可以随时删除，卸载时删除）
         ├── tmp/                   【临时】启动时清理
         └── mock/                  【演示】模拟数据，可以随时删除
+
+数据隔离（tests/test_isolation.py 会检查）：
+  - 安装包里只有程序和两个模板（config.example.yaml、.env.example），没有任何人的配置、密钥或数据；
+  - 程序只读写“程序文件夹”里的这些文件：打包后以 DFQ.exe 所在文件夹为准，不看当前目录、不往上级目录找；
+  - 不同安装文件夹之间互不相干（各有各的 config.yaml / .env / data）。
 """
 from __future__ import annotations
 

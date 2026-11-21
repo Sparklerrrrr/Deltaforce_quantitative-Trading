@@ -1,4 +1,9 @@
-"""moligod.com 价格提醒同步（可开关，默认关闭）。
+"""moligod.com 价格提醒同步（可开关，默认关闭；自动同步目前整体停用，见 AUTO_SYNC_AVAILABLE）。
+
+现状：只能用“手动”模式 —— 计划邮件里列出每个品种的提醒价位，由你自己到 moligod 网页上设置。
+下面的自动同步代码完整保留（以后恢复时用），但在 AUTO_SYNC_AVAILABLE 为 False 时一行都不会执行：
+sync() 只返回手动清单，login() 不打开浏览器。判断“现在是否自动同步”一律用 auto_enabled(cfg)，
+不要直接读 moligod.enabled。
 
 对 moligod 只做一件事：低频地在你自己的账号里设置价格提醒。
 **不采集它的任何行情数据**（用户协议禁止脚本采集，robots.txt 禁止 /api/）。
@@ -33,6 +38,28 @@ LABEL_LOW = "低于(≤)提醒"
 LABEL_HIGH = "高于(≥)提醒"
 LABEL_SAVE = "保存提醒"
 MODE_TRIGGER = "触发"
+
+# 自动同步（登录 moligod 网页、自动设置提醒价位）的总开关。
+# 目前是 False：功能和代码都保留，但暂时停用 —— 只能用“手动”模式（计划里列出价位，你自己到网页上设置）。
+# 停用期间，即使 config.yaml 里写了 moligod.enabled: true 也不会启动浏览器；界面上切到“自动”会提示暂不可用。
+# 以后要恢复：把这里改成 True（并在真实页面上实测一遍）。
+AUTO_SYNC_AVAILABLE = False
+UNAVAILABLE_TEXT = ("登录 moligod.com 网页自动设置交易区间的功能目前已停用，暂时只能使用手动模式："
+                    "程序会在计划里列出每个品种的提醒价位，请到 moligod 网页上手动设置。")
+
+
+def auto_enabled(cfg) -> bool:
+    """现在是否真的会自动同步：功能可用（AUTO_SYNC_AVAILABLE）并且配置里开了（moligod.enabled）。"""
+    return bool(AUTO_SYNC_AVAILABLE and cfg.get("moligod.enabled"))
+
+
+def mode_label(cfg) -> str:
+    """给人看的当前模式：“自动”“手动”或“手动（自动同步暂时停用）”。命令行 status 和界面共用。"""
+    if auto_enabled(cfg):
+        return "自动"
+    if cfg.get("moligod.enabled") and not AUTO_SYNC_AVAILABLE:
+        return "手动（自动同步暂时停用）"
+    return "手动"
 
 
 class SyncAbort(Exception):
@@ -120,14 +147,21 @@ def _candidates(target: str, available: list[str]) -> list[str]:
 def sync(cfg, db, desired: list[dict], *, dry_run: bool = False, sleep=time.sleep) -> dict:
     """执行同步。返回 {"status": 文字说明, "synced": [...], "manual": [...], "unmatched": [...]}。
 
-    manual = 需要你手动设置的阈值（未开启、失败、或没匹配上名字的）。
+    manual = 需要你手动设置的阈值（手动模式、失败、或没匹配上名字的）。
+
+    自动同步暂时停用（AUTO_SYNC_AVAILABLE = False）时，不管配置怎么写都走手动模式：
+    不导入、不启动 Playwright，不读写 moligod_alerts 表，只返回完整的手动清单。
     """
     res = {"status": "", "synced": [], "manual": [], "unmatched": [], "ok": False}
     if not desired:
         res.update(status="今天没有需要设置的提醒。", ok=True)
         return res
-    if not cfg.get("moligod.enabled"):
-        res.update(status="自动同步未开启（moligod.enabled: false）。", manual=list(desired))
+    if not auto_enabled(cfg):
+        if cfg.get("moligod.enabled") and not AUTO_SYNC_AVAILABLE:
+            status = "自动同步功能暂时停用，已按手动模式列出提醒价位，请到 moligod 网页上手动设置。"
+        else:
+            status = "自动同步未开启（moligod.enabled: false），请按下面的清单到 moligod 网页上手动设置。"
+        res.update(status=status, manual=list(desired))
         return res
     changed = diff_alerts(db, desired)
     if not changed:
@@ -288,7 +322,12 @@ def _read_one(page, mname: str, PWTimeout) -> tuple[float | None, float | None]:
 
 
 def login(cfg) -> str:
-    """打开浏览器让你手动登录一次；登录状态保存在本机的浏览器配置目录里，程序不接触账号密码。"""
+    """打开浏览器让你手动登录一次；登录状态保存在本机的浏览器配置目录里，程序不接触账号密码。
+
+    自动同步停用期间直接返回 UNAVAILABLE_TEXT，不打开浏览器（命令行据此返回非 0）。
+    """
+    if not AUTO_SYNC_AVAILABLE:
+        return UNAVAILABLE_TEXT
     try:
         from playwright.sync_api import sync_playwright  # type: ignore
     except ImportError:

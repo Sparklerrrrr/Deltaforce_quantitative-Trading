@@ -2,23 +2,28 @@
 
 1. 卖出线低于回本价（含最低利润率）的买入建议 → 降级为观望
 2. 模型对规则阈值的调整幅度有上限，且不能超出近期真实价格区间
-3. 数量按风控上限自动削减：每日最大投入、单品种最大持仓占比、总仓位上限
+3. 数量按风控上限自动削减：每日最大投入、单品种最大持仓占比、总仓位上限、单笔止损亏损上限（risk.py）
 4. 有效期有上限；过期计划作废
 5. 只允许关注清单内的品种；价格必须满足 止损 < 买入 < 卖出
+6. 资金损失约束（risk.py）：累计亏损 / 连续亏损触发的“暂停买入”、异常波动当天不买、超期持仓降价卖 / 时间止损
+
+模型输出 → 最终计划只有一条路：llm.validate_analysis（丢弃清单外品种、非法数字、未知动作）→ 本模块 apply
+（以上所有钳制都在这里，按“动作 → 价格 → 回本 → 止损 → 暂停 / 异常波动 → 数量”的顺序）→ plan.build。
+费率按品种取（cfg.fee_for），模型给不了费率。
 """
 from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
 
-from . import fees, timeutil
+from . import fees, risk, timeutil
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def portfolio_state(cfg, db, paper: bool | None = None) -> dict:
+def portfolio_state(cfg, db, paper: bool | None = None, *, persist: bool = True) -> dict:
     """当前资金与持仓。余额未知时用 risk.assumed_capital 估算。
 
     看哪本账由计划的性质决定（默认取 general.paper_mode）：
@@ -27,7 +32,7 @@ def portfolio_state(cfg, db, paper: bool | None = None) -> dict:
     """
     from . import ledger
     paper = cfg.paper if paper is None else bool(paper)
-    fee = cfg.fee
+    fee = cfg.fee_for                       # 按品种取费率（ledger 的 fee 参数接受函数）
     bal = ledger.balance(db, fee, paper=paper)
     pos = ledger.open_positions(db, fee, paper=paper)
     pos_value = 0.0
@@ -40,14 +45,20 @@ def portfolio_state(cfg, db, paper: bool | None = None) -> dict:
     cash = bal["amount"] if bal["known"] else float(cfg.get("risk.assumed_capital"))
     return {"cash": max(cash, 0.0), "cash_known": bal["known"], "positions": pos,
             "positions_value": pos_value, "equity": max(cash, 0.0) + pos_value,
-            "spent_today": ledger.spent_today(db, paper=paper), "paper": paper}
+            "spent_today": ledger.spent_today(db, paper=paper), "paper": paper,
+            # 同一本账的风控状态（累计亏损 / 连续亏损是否已暂停买入）；apply 据此把买入改成观望
+            "risk": risk.status(cfg, db, paper=paper, persist=persist)}  # dry-run 只读，不锁定新的暂停
+
 
 def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, dict],
           state: dict, now: datetime | None = None, valid_until: datetime | None = None) -> dict:
     """candidates：模型（或规则）给出的建议；返回 {"items": [...], "valid_until", "notes": [...]}。"""
     now = now or timeutil.now()
-    fee = cfg.fee
     R = lambda k: cfg.get(f"risk.{k}")  # noqa: E731
+    lim = risk.limits(cfg)
+    rs = state.get("risk") or {}
+    halt = rs.get("reason") if rs.get("halted") else None
+    resume_cmd = "python -m dfq risk resume" + (" --paper" if state.get("paper") else "")
     min_margin = float(cfg.get("rules.min_margin", 0.0))
     stop_pct = float(cfg.get("rules.stop_pct", 0.10))
     adj = float(R("llm_max_adjust_pct"))
@@ -66,12 +77,18 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
 
     allowed = {w["oid"] for w in feats.values()} if feats else set()
     items: list[dict] = []
+    seen: set = set()
     for c in candidates:
         oid = c.get("oid")
         if oid not in allowed or oid not in rule:
             notes.append(f"丢弃关注清单之外的建议：{c.get('name') or oid}")
             continue
+        if oid in seen:                      # 同一品种出现两次：只认第一条，否则单品种上限会被算两遍
+            notes.append(f"丢弃重复的建议：{feats[oid]['name']}")
+            continue
+        seen.add(oid)
         f, r = feats[oid], rule[oid]
+        fee = cfg.fee_for(f["name"])
         g: list[str] = []
         it = {
             "oid": oid, "name": f["name"], "action": c.get("action") or "watch",
@@ -148,6 +165,17 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
             it.update(buy_price=buy, sell_price=sell, stop_price=stop,
                       exp_net_return=round(fees.net_return(buy, sell, fee), 4),
                       stop_net_return=round(fees.net_return(buy, stop, fee), 4))
+
+        # 6) 资金损失约束：暂停买入（累计 / 连续亏损）、异常波动 —— 放在模型输出和价格钳制之后，模型改不了
+        if it["action"] == "buy":
+            if halt:
+                g.append(f"风控暂停新的买入：{halt}。卖出和止损照常；检查过后运行 {resume_cmd} 恢复")
+                it["action"] = "watch"
+            else:
+                why = risk.abnormal_reason(f, lim)
+                if why:
+                    g.append(why)
+                    it["action"] = "watch"
         if it["action"] != "buy":
             # 观望也保留参考线，便于事后看“如果买了会怎样”
             it["qty"], it["budget"] = 0, 0
@@ -178,45 +206,77 @@ def apply(cfg, candidates: list[dict], feats: dict[int, dict], rule: dict[int, d
         if want is None or want <= 0:
             want = int(share // price)             # 没给数量：平均分配
         cap_qty = int(min(per_item_cap, pool) // price)
+        # 单笔最大亏损：打到止损线的实亏（含卖出费）不超过总资产 × max_loss_per_trade_pct
+        fee_i = cfg.fee_for(it["name"])
+        loss_cap = risk.max_qty_for_loss(equity, price, it["stop_price"], fee_i, lim.max_loss_per_trade_pct)
+        loss_bound = loss_cap is not None and loss_cap < cap_qty and loss_cap < want
+        if loss_bound:
+            each = price - fees.net_proceeds(it["stop_price"], fee_i)
+            g.append(f"单笔亏损上限：打到止损线 {it['stop_price']} 每发实亏约 {each:.0f}（含 {fee_i:.0%} 卖出费），"
+                     f"总资产 {equity:,.0f} × {lim.max_loss_per_trade_pct:.0%} 最多允许 {loss_cap} 发")
+            cap_qty = loss_cap
         qty = min(want, cap_qty)
         qty -= qty % lot
         if qty < want - (want % lot):
             g.append(f"数量 {want} 超出风控上限，削减为 {qty}")
         if qty < min_qty:
-            g.append(f"可买数量 {qty} 低于最小下单量 {min_qty}，降级为观望")
+            g.append(f"可买数量 {qty} 低于最小下单量 {min_qty}，降级为观望"
+                     + ("（受单笔亏损上限限制：止损太远或总资产太少）" if loss_bound else ""))
             it.update(action="watch", qty=0, budget=0)
             continue
         it["qty"] = qty
         it["budget"] = qty * price
         pool -= it["budget"]
 
-    sells = build_sells(cfg, state, items)
+    sells = build_sells(cfg, state, items, now)
+    if halt:
+        notes.append(f"风控暂停新的买入：{halt}。卖出和止损照常；检查过后运行 {resume_cmd} 恢复")
 
     return {"items": items, "sells": sells, "valid_until": valid_until, "notes": notes,
             "caps": {"daily": round(daily_cap), "total": round(total_cap),
-                     "per_item": round(equity * float(R("max_position_pct")))}}
+                     "per_item": round(equity * float(R("max_position_pct"))),
+                     "loss_per_trade": round(equity * lim.max_loss_per_trade_pct)}}
 
 
-def build_sells(cfg, state: dict, items: list[dict]) -> list[dict]:
-    """给每个真实持仓生成卖出指令：卖出线不低于持仓回本价；止损线按持仓均价算。"""
-    fee = cfg.fee
+def build_sells(cfg, state: dict, items: list[dict], now: datetime | None = None) -> list[dict]:
+    """给每个真实持仓生成卖出指令：卖出线不低于持仓回本价；止损线按持仓均价算。
+
+    最大持仓时间（risk.max_holding_days，从 positions 的 held_since 算）：
+      超过 → “超期持仓”，卖出线降到回本价（不再要求利润）；
+      超过两倍 → “时间止损”，建议按现价卖出，并写明按现价卖出的预计盈亏（扣费后）。
+    """
+    now = now or timeutil.now()
+    lim = risk.limits(cfg)
     stop_pct = float(cfg.get("rules.stop_pct", 0.10))
     by_name = {i["name"]: i for i in items}
     sells = []
     for name, p in state["positions"].items():
+        fee = cfg.fee_for(name)
         plan_it = by_name.get(name)
         cost_be = fees.breakeven_price(p["avg_cost"], fee)
         target = plan_it["sell_price"] if plan_it and plan_it.get("sell_price") else cost_be
-        note = ""
+        note, flag = "", None
         if target < cost_be:
             note = f"今日卖出线 {target} 低于持仓回本价 {cost_be}，按回本价挂"
             target = cost_be
+        days = risk.holding_days(p.get("held_since"), now)
+        mark = p.get("mark") or p["avg_cost"]
+        if days is not None and days > 2 * lim.max_holding_days:
+            pnl = (fees.net_proceeds(mark, fee) - p["avg_cost"]) * p["qty"]
+            flag, target = "time_stop", int(round(mark))
+            note = (f"时间止损：已持有 {days:.0f} 天，超过上限 {lim.max_holding_days} 天的两倍，建议按现价约 {mark:.0f} 卖出"
+                    f"（预计{'盈利' if pnl >= 0 else '亏损'} {abs(pnl):,.0f}，已扣 {fee:.0%} 卖出费）")
+        elif days is not None and days > lim.max_holding_days:
+            flag, target = "overdue", cost_be
+            note = (f"超期持仓：已持有 {days:.0f} 天（上限 {lim.max_holding_days} 天），卖出线降到回本价 {cost_be}，"
+                    f"不再要求利润")
         sells.append({
             "oid": p.get("oid"), "name": name, "qty": p["qty"], "avg_cost": round(p["avg_cost"], 1),
             "breakeven": cost_be, "sell_price": int(target),
             "stop_price": int(min(math.floor(p["avg_cost"] * (1 - stop_pct)),
                                   (plan_it or {}).get("stop_price") or float("inf"))),
-            "mark": p.get("mark"), "note": note,
+            "mark": p.get("mark"), "note": note, "risk_flag": flag,
+            "held_days": round(days, 1) if days is not None else None,
         })
     return sells
 

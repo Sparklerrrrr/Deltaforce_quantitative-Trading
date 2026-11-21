@@ -1,0 +1,20 @@
+# scripts/scan_secrets.py 的允许清单：确认无害、但规则认不出来的命中。
+#
+# 格式（一行一条）：规则 | 路径 | 指纹 | 分类 | 理由
+#   规则：scan_secrets.py 里的规则名（secret_assignment、email……），* 表示任意规则
+#   路径：文件路径，可用 * 通配；写成 history:路径 / tree:路径 / dir:路径 时只对那一种扫描生效
+#   指纹：扫描结果里的“指纹”（值的 sha256 前 12 位，不是值本身），* 表示任意值——尽量写具体指纹
+#   分类：只能是 占位符 / 测试假值 / 误报（不能把“疑似真实”登记进来；真密钥的处理办法是作废它）
+#   理由：必填，写清楚为什么无害
+#
+# 新增条目前先想一想：能不能把那个值改成一眼看得出是假的写法（dummy-test-token-0000）？能改就改，不要登记。
+
+# Inno Setup 官方中文语言文件里的译者公开联系方式（文件原样取自 Inno Setup 7.1.1，不能改，否则校验值对不上）
+email | installer/Languages/ChineseSimplified.isl | c7f0af47503c | 误报 | Inno Setup 官方语言文件里译者公开的联系邮箱，不是本项目的个人信息
+email | installer/Languages/ChineseSimplified.isl | e39935158a4c | 误报 | 同上（文件末尾的署名）
+
+# 已经提交进 Git 历史的手写测试假值（不是任何平台签发的密钥）。当前文件里要改成 dummy/test 写法，
+# 所以这几条只对 history 生效：当前文件里再出现同样的值，--tree 照样会报出来。
+secret_assignment | history:tests/test_gui.py | 7234ce838bd4 | 测试假值 | 测试里手写的假 token（tk_gui_SECRET_…），历史版本
+secret_assignment | history:tests/test_redact.py | b7fbfd43f7a2 | 测试假值 | 测试脱敏用的手写假 token（tk_live_…），历史版本
+openai_style_key | history:tests/test_secure_transport.py | e39f86e89a56 | 测试假值 | 测试脱敏用的手写假 key（sk-live-…），历史版本

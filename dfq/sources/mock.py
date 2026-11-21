@@ -20,6 +20,7 @@ from .. import timeutil
 from .catalog import AMMO_REFERENCE
 
 _EPOCH = datetime(2026, 1, 1)
+_WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 
 def _unit(seed: str) -> float:
@@ -111,7 +112,8 @@ class MockXtcTransport:
         end = now.replace(second=0, microsecond=0)
         end -= timedelta(minutes=end.minute % 5)
         pts = list(self._series(oid, end - timedelta(hours=24) + timedelta(minutes=5), end, 5))
-        return {"data": {"a": [f"{t.day:02d} {t:%H:%M}分" for t, _ in pts],
+        # 标签写法与真实接口一致（2026-11-16 实测："11-15 周日 23:51分"），让演示 / 测试走和真实数据相同的解析路径
+        return {"data": {"a": [f"{t:%m-%d} {_WEEKDAYS[t.weekday()]} {t:%H:%M}分" for t, _ in pts],
                          "b": [v for _, v in pts], "zb": [0 for _ in pts]}}
 
     def _h_hour(self, p):
@@ -122,7 +124,7 @@ class MockXtcTransport:
             h = now - timedelta(hours=i)
             pts = list(self._series(oid, h, h + timedelta(minutes=55), 5))
             hi, lo = max(pts, key=lambda x: x[1]), min(pts, key=lambda x: x[1])
-            a.append(f"{h:%m-%d %H}时"); b.append(pts[-1][1])
+            a.append(f"{h:%m-%d} {_WEEKDAYS[h.weekday()]} {h:%H}时"); b.append(pts[-1][1])   # 实测写法："11-15 周六 20时"
             mx.append(hi[1]); mn.append(lo[1])
             mxd.append(f"{hi[0]:%m-%d %H:%M}分"); mnd.append(f"{lo[0]:%m-%d %H:%M}分")
         data = {"a": a, "b": b, "max": mx, "maxD": mxd, "min": mn, "minD": mnd, "zb": [0] * len(a)}
@@ -130,7 +132,7 @@ class MockXtcTransport:
             grade = self.catalog.get(oid, ("", 4, 0))[1]
             for i in range(1, 13):
                 h = now + timedelta(hours=i)
-                data["a"].append(f"{h:%m-%d %H}时")
+                data["a"].append(f"{h:%m-%d} {_WEEKDAYS[h.weekday()]} {h:%H}时")
                 data.setdefault("yc", []).append(mock_price(oid, grade, h))
         return {"data": data}
 
@@ -179,3 +181,19 @@ class MockXtcTransport:
 
     def _h_ammo_pack(self, p):
         return {"data": {}}
+
+    # 平台“军需处兑换”按 13% 收手续费（2026-11-16 实测 9 种 2～4 级子弹都是 12.998%～13.000%）。
+    # 这里故意用固定的 13%，而不是 self.fee：否则 fee-check --mock 只会“核对出”你自己配置的数，毫无意义。
+    PLATFORM_FEE = 0.13
+
+    def _h_exchange_pay(self, p):
+        now = timeutil.now()
+        rows = []
+        picks = [o for o, (_, g, _) in sorted(self.catalog.items()) if g in (2, 3, 4)][:9]
+        for oid in picks:
+            name, grade, lid = self.catalog[oid]
+            count = 60 if grade >= 4 else 120
+            total = mock_price(oid, grade, now) * count
+            rows.append({"oid": oid, "name": name, "grade": grade, "count": count, "priceMax": total,
+                         "sxf": int(round(total * self.PLATFORM_FEE)), "is_pay": 1, "isGet": "1", "pic": ""})
+        return {"data": rows}

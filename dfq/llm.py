@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import re
+from datetime import timedelta
 from typing import Any
 
 from . import timeutil
@@ -157,14 +158,14 @@ class LLMClient:
             finish = resp["choices"][0].get("finish_reason")
         except (KeyError, IndexError, TypeError, AttributeError):
             raise LLMError("模型响应结构不符合 OpenAI 格式") from None
-        usage = resp.get("usage") or {}
+        usage = resp.get("usage") if isinstance(resp.get("usage"), dict) else {}
         if finish == "length":
             raise LLMError(f"模型输出达到 llm.max_tokens（{body['max_tokens']}）上限被截断"
                            f"（本次用了 {usage.get('completion_tokens', '?')} 个输出 token）。"
                            "如果服务商默认开启“思考模式”，思考内容也会占用这个额度："
                            "可以调大 llm.max_tokens，或在 llm.extra_body 里关闭思考模式")
         if isinstance(content, list):   # 个别兼容实现把内容拆成片段
-            content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+            content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
         event(log, logging.INFO, "模型调用完成", model=self.model,
               prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"))
         return parse_json_loose(content)
@@ -267,8 +268,11 @@ def validate_analysis(obj: dict, rule: dict[int, dict]) -> dict:
     next_run = None
     if obj.get("next_run"):
         try:
-            next_run = timeutil.fmt_min(timeutil.parse_dt(str(obj["next_run"])))
-        except ValueError:
+            nr = timeutil.parse_dt(str(obj["next_run"])[:40])
+            # 只接受“现在之后 14 天以内”的建议：过去的时间或几年后的时间说明模型在胡写（或被误导）
+            if timeutil.now() <= nr <= timeutil.now() + timedelta(days=14):
+                next_run = timeutil.fmt_min(nr)
+        except (ValueError, TypeError, OverflowError):
             next_run = None
     return {
         "items": [seen[oid] for oid in rule],
@@ -289,7 +293,8 @@ def build_analysis_input(cfg, feats: dict[int, dict], rule: dict[int, dict], sta
             "change_today", "implied_fee", "stale_hours", "warnings")
     items = []
     for oid, f in feats.items():
-        items.append({"oid": oid, "name": f["name"], "grade": f.get("grade"),
+        # 品种名现在来自你的关注清单；仍按外部文字清洗一遍（单行、无链接、限长），防止以后改成用接口返回的名字时漏掉
+        items.append({"oid": oid, "name": clean(f["name"], 80), "grade": f.get("grade"),
                       "features": {k: f[k] for k in keep if f.get(k) not in (None, [], {})},
                       "rule": {k: rule[oid].get(k) for k in
                                ("action", "buy_price", "sell_price", "stop_price", "breakeven", "reason")}})

@@ -34,6 +34,13 @@ _QUOTE = re.compile(
     r"发件人\s*[:：]|From\s*:|-{2,}\s*回复的原邮件|.*<[^<>@\s]+@[^<>\s]+>\s*于.*写道)", re.I)
 
 
+# 上限：一封回复正常只有几行；超大的正文、超长的行既不可能是你手写的成交，也会让解析变慢
+MAX_BODY_CHARS = 20_000       # 去掉引用原文之后，只看这么多字符
+MAX_LINES = 300               # 最多看这么多行
+MAX_LINE_CHARS = 300          # 一行成交记录最多这么长
+MAX_TRADES = 50               # 一封回复最多记这么多笔
+
+
 @dataclass
 class ParsedTrade:
     side: str          # buy / sell
@@ -49,7 +56,7 @@ def strip_quoted(text: str) -> str:
     """只保留用户自己写的部分，去掉引用的原邮件。"""
     out = []
     for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if _QUOTE.match(line):
+        if _QUOTE.match(line[:500]):            # 只看行首一段：引用标记都在行首，超长行不值得慢慢匹配
             break
         out.append(line)
     return "\n".join(out)
@@ -119,8 +126,24 @@ def parse_reply(text: str, resolver=None, price_lookup=None) -> tuple[list[dict]
     """
     trades: list[dict] = []
     errors: list[str] = []
-    body = strip_quoted(text)
-    for chunk in re.split(r"[\n;；]+", body):
+    body = strip_quoted(str(text or "")[:MAX_BODY_CHARS * 10])
+    if len(body) > MAX_BODY_CHARS:
+        body = body[:MAX_BODY_CHARS]
+        errors.append(f"回复正文太长（超过 {MAX_BODY_CHARS} 字），只看了开头部分；请只写成交记录，一行一笔")
+    chunks = re.split(r"[\n;；]+", body)
+    if len(chunks) > MAX_LINES:
+        chunks = chunks[:MAX_LINES]
+        errors.append(f"回复的行数太多（超过 {MAX_LINES} 行），只看了前面部分；请只写成交记录，一行一笔")
+    for chunk in chunks:
+        if len(chunk.strip()) > MAX_LINE_CHARS:
+            if _SIDE.match(_normalize(chunk[:MAX_LINE_CHARS])) and re.search(r"\d", chunk):
+                errors.append(f"「{chunk.strip()[:40]}…」这一行太长（超过 {MAX_LINE_CHARS} 字），没有处理")
+            continue
+        if len(trades) >= MAX_TRADES:
+            if parse_line(chunk)[0] is not None:
+                errors.append(f"一封回复最多记 {MAX_TRADES} 笔，其余的没有处理；请分几封回复，或在界面里记账")
+                break
+            continue
         pt, err = parse_line(chunk)
         if err:
             errors.append(err)

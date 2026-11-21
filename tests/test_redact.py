@@ -4,7 +4,7 @@ import logging
 from dfq import log as L
 from dfq.http import HttpError, request_json
 
-TOKEN = "tk_live_9f8e7d6c5b4a3210"
+TOKEN = "dummy-test-token-9f8e7d6c5b4a3210"
 
 
 def test_redact_token_in_url():

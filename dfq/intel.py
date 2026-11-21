@@ -145,7 +145,10 @@ def fetch_news(cfg, db, api_key: str | None, transport=None) -> int:
         for r in (resp.get("results") or []) if isinstance(resp, dict) else []:
             if not isinstance(r, dict) or not r.get("content"):
                 continue
-            host = urlparse(str(r.get("url", ""))).netloc or "未知站点"
+            try:   # 只取主机名：netloc 里可能带“用户名:密码@”或端口，信源名会出现在邮件和提示词里
+                host = untrusted.strip_hidden(urlparse(str(r.get("url", ""))).hostname or "")[:60] or "未知站点"
+            except ValueError:
+                host = "未知站点"
             if add_document(db, "news", host, str(r["content"]), title=str(r.get("title") or "")[:200],
                             url=str(r.get("url") or ""), published_at=str(r.get("published_date") or "")[:25] or None):
                 n += 1
@@ -236,8 +239,11 @@ def process_documents(cfg, db, client: L.LLMClient | None = None, limit: int = 1
                     quarantine(doc, ["摘要里出现了对模型的指令"])
                     continue
                 ops = []
-                for o in (obj.get("opinions") or [])[:20]:
-                    if not isinstance(o, dict) or o.get("item") not in names:
+                raw_ops = obj.get("opinions")
+                for o in (raw_ops if isinstance(raw_ops, list) else [])[:20]:
+                    # 模型回答的结构不对（opinions 不是列表、item 是列表/对象……）只丢掉那一项，
+                    # 不能抛异常让整个资讯环节中止、留下一半文稿处理过一半没处理
+                    if not isinstance(o, dict) or not isinstance(o.get("item"), str) or o["item"] not in names:
                         continue                           # 只接受关注清单里的品种
                     if o.get("direction") not in ("up", "down"):
                         continue

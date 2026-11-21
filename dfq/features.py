@@ -79,7 +79,7 @@ def compute(cfg, db, item: dict, now: datetime | None = None) -> dict:
     now = now or timeutil.now()
     oid = item["oid"]
     window = int(cfg.get("features.window_days", 7))
-    fee = cfg.fee
+    fee = cfg.fee_for(item["name"])
     start = now - timedelta(days=window)
 
     minutes = db.minutes(oid, start, now)
@@ -161,10 +161,20 @@ def compute(cfg, db, item: dict, now: datetime | None = None) -> dict:
     if f["trend_30d"] is None and len(avg_series) >= 25:
         f["trend_30d"] = round((avg_series[-1][1] / avg_series[0][1] - 1) * 100, 2)
 
-    # 费率核对：用秒出价反推
+    # 近 7 日中位价与现价的偏离：给“异常波动保护”用（固定 7 天，不随 window_days 变）
+    p7 = sorted(p for _, p in db.minutes(oid, now - timedelta(days=7), now))
+    if len(p7) < 60:
+        p7 = sorted(v["avg"] for d, v in daily_all.items()
+                    if d >= timeutil.day_str(now - timedelta(days=7)) and v["avg"])
+    if p7:
+        med7 = statistics.median(p7)
+        f["median_7d"] = round(med7, 1)
+        f["dev_from_median_pct"] = round((current / med7 - 1) * 100, 2) if med7 else None
+
+    # 秒出价比现价低多少：这是“想立刻卖掉要让多少价”，不是手续费（手续费见 fees.basis）
     if snap is not None and snap["quick_price"] and snap["price"]:
-        imp = fees.implied_fee(snap["price"], snap["quick_price"])
-        f["implied_fee"] = round(imp, 4) if imp is not None else None
+        qd = fees.quick_sell_discount(snap["price"], snap["quick_price"])
+        f["quick_sell_discount"] = round(qd, 4) if qd is not None else None
 
     if f["low_ref"] and f["high_ref"]:
         f["low_ref"], f["high_ref"] = round(f["low_ref"]), round(f["high_ref"])
@@ -174,13 +184,9 @@ def compute(cfg, db, item: dict, now: datetime | None = None) -> dict:
 
 
 def fee_check(cfg, feats: list[dict]) -> str | None:
-    """汇总各品种反推出的费率，与配置偏差大就给一句提示。"""
-    vals = [f["implied_fee"] for f in feats if f.get("implied_fee") is not None]
-    if not vals:
-        return None
-    med = statistics.median(vals)
-    conf = cfg.fee
-    if abs(med - conf) > float(cfg.get("fees.warn_diff", 0.03)):
-        return (f"费率提示：按秒出价反推的综合费率中位数约 {med:.1%}，与配置的 {conf:.0%} 相差较大。"
-                f"（秒出价含“往前压一格”的让价，所以反推值偏高属正常；偏差很大时请核对实际手续费。）")
-    return None
+    """秒出价折让的中性提示（只在明显偏大时给一句）。
+
+    旧版在这里把“1 − 秒出价/现价”当成费率和配置比较，真实数据里这个值只有约 2%，于是每份计划都误报
+    “与配置的 13% 相差较大”。秒出价不是扣费后的到手价，所以这里不再和费率比较；费率依据见 fees.basis。
+    """
+    return fees.quick_sell_note([f.get("quick_sell_discount") for f in feats])

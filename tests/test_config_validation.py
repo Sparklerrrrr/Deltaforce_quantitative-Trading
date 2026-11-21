@@ -1,6 +1,5 @@
 """审查问题四：配置必须严格校验。不合法就明确报错并拒绝运行，绝不悄悄换成默认值。"""
 import copy
-import math
 
 import pytest
 import yaml

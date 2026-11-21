@@ -1,0 +1,10 @@
+# 开发 / 测试 / CI 用的工具（不会被打进 DFQ.exe）。先装 requirements.txt，再装这个：
+#   .venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
+# 版本固定：检查工具一升级规则就可能变，CI 结果会无缘无故变红；要升级时在这里统一改。
+pytest==9.2.0
+ruff==0.17.5
+mypy==2.4.1
+types-PyYAML==6.0.12.20261113
+vermin==1.9.2
+# 依赖安全扫描（查 requirements.txt 里的包有没有已公开的漏洞）
+pip-audit>=2.7

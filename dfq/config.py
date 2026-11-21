@@ -36,8 +36,9 @@ DEFAULTS: dict[str, Any] = {
     },
     "watchlist": DEFAULT_WATCHLIST,
     "fees": {
-        "sell_fee_rate": 0.13,
-        "warn_diff": 0.03,           # 反推费率与配置偏差超过它就提示
+        "sell_fee_rate": 0.13,       # 默认值，不是实测：用 fee-check 或卖出时填实际到手金额来核对
+        "warn_diff": 0.03,           # 按你记录的实际到手金额反推的费率，与配置相差超过它就提示
+        "overrides": {},             # 个别品种费率不同时单独设置：{品种名: 费率}
     },
     "xtc": {
         "enabled": True,
@@ -60,6 +61,7 @@ DEFAULTS: dict[str, Any] = {
             "item_list_pro": 600, "minute": 600, "hour": 1800, "day": 21600,
             "ammo_day": 3600, "ammo_zr_yc": 21600, "ammo_pack": 3600,
             "item_list_pro_key": 2592000,
+            "exchange_pay": 21600,    # fee-check 用：6 小时内重复核对不再花次数
         },
     },
     "features": {
@@ -84,6 +86,13 @@ DEFAULTS: dict[str, Any] = {
         "min_qty": 20,
         "llm_max_adjust_pct": 0.10,  # 模型对规则阈值的调整幅度上限
         "max_valid_hours": 72,
+        # —— 资金损失约束（代码强制，在模型输出之后执行）——
+        "max_loss_per_trade_pct": 0.03,   # 单笔买入打到止损线的实亏（含卖出费）不超过总资产的 3%
+        "max_holding_days": 7,            # 持仓超过 7 天：卖出线降到回本价；超过 14 天：建议按现价卖出
+        "max_cumulative_loss_pct": 0.10,  # 窗口内已实现亏损超过资金基准的 10% → 暂停新的买入
+        "loss_window_days": 30,
+        "halt_after_losses": 3,           # 最近连续 3 笔平仓都亏 → 暂停新的买入（策略可能失效）
+        "abnormal_move_pct": 12.0,        # 今日涨跌或相对近 7 日中位价偏离超过 12% → 当天不买
     },
     "llm": {
         "enabled": False,
@@ -137,6 +146,8 @@ DEFAULTS: dict[str, Any] = {
         },
         "confirm_success": False,
         "poll_lookback_days": 3,
+        # 计划邮件发出超过这么多天后，对它的回复不再记账（防止旧邮件被翻出来重放）；请改用界面或命令行记账
+        "reply_max_age_days": 3,
     },
     "executor": {"mode": "manual"},
     "moligod": {
@@ -225,6 +236,16 @@ class Config:
     @property
     def fee(self) -> float:
         return float(self.get("fees.sell_fee_rate", 0.13))
+
+    def fee_for(self, name: str | None) -> float:
+        """某个品种的卖出费率：fees.overrides 里单独设置了就用它（名称不区分大小写、忽略首尾空白），否则用 fees.sell_fee_rate。"""
+        ov = self.get("fees.overrides") or {}
+        if name and isinstance(ov, dict) and ov:
+            key = str(name).strip().lower()
+            for k, v in ov.items():
+                if str(k).strip().lower() == key:
+                    return float(v)
+        return self.fee
 
     @property
     def paper(self) -> bool:

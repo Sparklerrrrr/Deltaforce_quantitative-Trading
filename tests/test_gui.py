@@ -1,5 +1,4 @@
 """图形界面：核心逻辑（不需要显示器）+ 真实窗口冒烟测试（有 tkinter 和显示器时才跑）。"""
-import os
 import sys
 import threading
 from pathlib import Path
@@ -10,7 +9,7 @@ from dfq import gui_core as G
 from dfq import ledger
 from dfq.cli import main
 
-TOKEN = "tk_gui_SECRET_778899"
+TOKEN = "dummy-test-gui-token-778899"
 
 
 class FakeBackend(G.SecretBackend):

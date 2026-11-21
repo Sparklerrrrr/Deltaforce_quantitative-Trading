@@ -19,6 +19,9 @@
 
 ### 安装（给使用者）
 
+完整步骤（下载、核对校验值、首次设置、升级、卸载）见 [docs/安装说明.md](docs/安装说明.md)。
+安装包只从本仓库的 Releases 下载，下载后先按说明核对 SHA-256 校验值。
+
 双击 `DFQ-Setup-版本号.exe`，按向导操作：
 
 - **选择安装文件夹**：默认 `D:\DFQ`（没有 D 盘时放在当前用户的程序目录）。不需要管理员权限。
@@ -77,7 +80,7 @@
 
 ### 生成安装包（给开发者）
 
-在项目根目录双击（需要 Python 3.11+；要生成安装包还需要装 [Inno Setup](https://jrsoftware.org/isinfo.php)）：
+在项目根目录双击（需要 Python 3.11+；要生成安装包还需要装 [Inno Setup](https://jrsoftware.org/isinfo.php) 6.5 或更新版本）：
 
 ```
 scripts\build_exe.bat
@@ -87,6 +90,9 @@ scripts\build_exe.bat
 
 - `dist\DFQ\`：程序文件夹（`DFQ.exe` + `_internal\`），可以直接运行
 - `dist\DFQ-Setup-版本号.exe`：安装包（没找到 Inno Setup 时跳过这一步；也可以用环境变量 `DFQ_ISCC` 指定 ISCC.exe）
+
+打包后会先用 `scripts\scan_secrets.py` 检查 `dist\DFQ`，里面混进了个人文件（`config.yaml`、`.env`、`data\` 等）就停下。
+自己构建的安装包只用于自测；正式发布由 GitHub 自动构建，见 [docs/发布流程.md](docs/发布流程.md)。
 
 安装脚本是 `installer\DFQ.iss`。`DFQ.exe` 带参数时就是命令行模式（例如计划任务里的 `DFQ.exe run`），
 输出写到安装文件夹的 `data\logs\task-日期.log`。
@@ -173,6 +179,7 @@ python -m dfq init
 几点说明：
 
 - 如果系统环境变量里也设置了同名的（例如以前用 `SetEnvironmentVariable` 设过），**以系统环境变量为准**。
+  `python -m dfq status` 会逐项写明每个密钥来自 `.env` 还是系统环境变量（不显示内容）。
 - `.env` 是明文文件：它防的是不小心提交、上传、贴进日志，防不了本机上的恶意程序。不要把它发给别人或截图。
 - 换电脑或重新克隆项目时，`.env` 不会跟着走，需要重新填写。
 
@@ -354,7 +361,11 @@ data/                   运行数据（不入库）：数据库、缓存、计�
 ## 十、开发
 
 ```bash
+.venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
+python -m ruff check .                              # 只查真正的错误（规则见 pyproject.toml）
+python scripts/scan_secrets.py --tree --history     # 提交前查一遍密钥和个人信息（输出已打码）
 ```
 
 测试会封死真实网络并清空所有 `DFQ_*` 环境变量，所以绝不会消耗接口次数。
+推送后 GitHub Actions 会在 Python 3.11–3.14 上跑同样的检查（`.github/workflows/ci.yml`）；发布流程见 [docs/发布流程.md](docs/发布流程.md)。

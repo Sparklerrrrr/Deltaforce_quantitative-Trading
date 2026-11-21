@@ -3,8 +3,9 @@
 游戏和小涛查的数据都是北京时间，所以全系统统一用“北京时间的 naive datetime”。
 不依赖 zoneinfo（Windows 上需要额外装 tzdata），中国没有夏令时，固定 UTC+8 即可。
 
-接口返回的时间标签都不带年份（分钟曲线甚至不带月份），这里负责补全：
-- 分钟曲线： "25 16:02分"       —— 只有 日 时:分
+接口返回的时间标签都不带年份，这里负责补全：
+- 分钟曲线： "11-15 周日 23:51分" —— 月-日 星期 时:分（2026-11-16 实测的真实写法）
+             "25 16:02分"        —— 只有 日 时:分（公开文档里的写法；两种都认）
 - 小时曲线： "12-23 16时"       —— 月-日 时
 - 天曲线：   "11-27"            —— 月-日
 - 高低点：   "12-23 16:57分"    —— 月-日 时:分
@@ -57,6 +58,9 @@ def fmt_min(dt: datetime) -> str:
 
 
 _RE_MINUTE = re.compile(r"^\s*(\d{1,2})\s+(\d{1,2})[:：](\d{1,2})")
+# 实测（2026-11-16 真实运行）：分钟曲线的标签其实是 "11-15 周日 23:51分"（带月份和星期），不是文档里的 "25 16:02分"。
+# 只认文档写法时，接口每次返回的 143 个点会被整批丢弃 —— 每晚为 8 个品种付费拉取的分钟数据一条都存不下来。
+_RE_MD_HM = re.compile(r"^\s*\d{1,2}-\d{1,2}(?:\s+(?:周|星期)[一二三四五六日天])?\s+\d{1,2}[:：]\d{1,2}")
 # 实测（2026-11-15 probe）：小时曲线的标签是 "11-15 周六 20时"，日期和小时之间夹着星期几
 _RE_MD = re.compile(r"^\s*(\d{1,2})-(\d{1,2})(?:\s+(?:周|星期)[一二三四五六日天])?(?:\s+(\d{1,2})(?:[:：](\d{1,2}))?)?")
 
@@ -79,14 +83,21 @@ def _date_with_day(anchor: date, day: int, max_back: int = 3, forward: int = 0) 
 
 
 def parse_minute_labels(labels: list[str], ref: datetime) -> list[datetime | None]:
-    """把分钟曲线的标签（"25 16:02分"）补全成完整时间。
+    """把分钟曲线的标签补全成完整时间。两种写法都认：
+      "11-15 周日 23:51分"  带月份（真实接口的写法）：只缺年份，取离 ref 最近的那一年；
+      "25 16:02分"         只有“日”（文档里的写法）：按下面的回溯办法推出月份和年份。
 
-    思路：序列是按时间升序、最多覆盖最近 24 小时，最后一个点最接近 ref（拉取时刻）。
+    回溯的思路：序列是按时间升序、最多覆盖最近 24 小时，最后一个点最接近 ref（拉取时刻）。
     先定位最后一个点的日期，再从后往前逐点回溯；当“时:分”比后一个点还大时，
     说明跨过了零点，日期减一天。解析不了的标签返回 None（由调用方丢弃）。
     """
+    absolute: list[datetime | None] = [None] * len(labels)   # 带月份的标签：直接得到完整时间
     parsed: list[tuple[int, int, int] | None] = []
-    for lab in labels:
+    for idx, lab in enumerate(labels):
+        if _RE_MD_HM.match(str(lab)):
+            absolute[idx] = parse_md_label(str(lab), ref)     # 月/日/时/分越界时返回 None
+            parsed.append(None)
+            continue
         m = _RE_MINUTE.match(str(lab))
         if not m:
             parsed.append(None)
@@ -100,6 +111,9 @@ def parse_minute_labels(labels: list[str], ref: datetime) -> list[datetime | Non
     out: list[datetime | None] = [None] * len(labels)
     nxt: datetime | None = None
     for i in range(len(parsed) - 1, -1, -1):
+        if absolute[i] is not None:
+            out[i] = nxt = absolute[i]
+            continue
         p = parsed[i]
         if p is None:
             continue

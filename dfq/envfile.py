@@ -111,6 +111,45 @@ def load_into(environ, path: str | Path) -> list[str]:
     return loaded
 
 
+SOURCE_NONE = "none"          # 哪里都没有
+SOURCE_DOTENV = "dotenv"      # 来自程序文件夹里的 .env
+SOURCE_SYSTEM = "system"      # 来自系统 / 终端的环境变量（.env 里没有，或者值一样）
+SOURCE_SYSTEM_OVERRIDES = "system_overrides"   # 系统环境变量和 .env 都有、值不同：.env 里的值被忽略
+
+SOURCE_TEXT = {
+    SOURCE_NONE: "未设置",
+    SOURCE_DOTENV: "已设置（来自 .env）",
+    SOURCE_SYSTEM: "已设置（来自系统环境变量）",
+    SOURCE_SYSTEM_OVERRIDES: "已设置（来自系统环境变量；.env 里另有一个值，但没有生效）",
+}
+
+
+def source(name: str, path: str | Path, environ=None) -> str:
+    """这个密钥现在从哪里来（只看来源，绝不返回值）。
+
+    为什么需要：系统里如果早就有同名的 DFQ_* 环境变量（例如以前按旧说明设置过，或别的程序设置的），
+    它会静默盖过 .env——用户在“设置”页改了 .env 却不生效，很难查。这里按“进程里的值是否等于 .env 里的值”判断：
+      - 进程里没有、.env 里也没有              → none
+      - 进程里的值与 .env 相同                  → dotenv（启动时从 .env 读进来的，或刚在界面里保存的）
+      - 进程里有、.env 里没有                    → system
+      - 进程里有、.env 里也有但不同              → system_overrides（.env 的值被忽略）
+    进程里没有、.env 里有的情况只会出现在禁用了自动读取（DFQ_DOTENV=0）时，按 dotenv 报告。
+    """
+    environ = os.environ if environ is None else environ
+    env_val = environ.get(name) or ""
+    file_val = read(path).get(name, "")
+    if not env_val:
+        return SOURCE_DOTENV if file_val else SOURCE_NONE
+    if file_val and env_val == file_val:
+        return SOURCE_DOTENV
+    return SOURCE_SYSTEM_OVERRIDES if file_val else SOURCE_SYSTEM
+
+
+def sources(path: str | Path, environ=None) -> dict[str, str]:
+    """所有登记过的密钥各自的来源（给 dfq status 和界面用）。"""
+    return {name: source(name, path, environ) for name in SECRET_ENV_NAMES}
+
+
 def autoload(config_path: str | Path | None, environ=None) -> list[str]:
     """命令行启动时调用：读取配置文件旁边的 .env。"""
     environ = os.environ if environ is None else environ

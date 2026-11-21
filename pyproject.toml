@@ -2,12 +2,15 @@
 name = "dfq"
 version = "1.0.0"
 description = "三角洲行动子弹交易决策助手：定时采集行情、生成交易计划、邮件通知人工执行、复盘打分"
+# 最低 3.11：vermin 检查源码最低需要 3.10，ruff 以 py311 为目标检查通过；
+# 本机只有 3.14，3.11～3.13 只在 CI（.github/workflows/ci.yml）上实际运行测试。
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
+gui = ["pywebview>=5", "pystray>=0.19", "Pillow>=10"]
 moligod = ["playwright>=1.44"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff", "mypy", "types-PyYAML", "vermin", "pip-audit"]   # 固定版本见 requirements-dev.txt
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -15,3 +18,46 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["dfq*"]
+
+# ---------------------------------------------------------------------------
+# ruff：只查“真正的错误”。
+#   E4/E7/E9 = 导入、语句和语法错误；F = pyflakes（未定义的名字、没用到的导入、写错的 f-string……）；
+#   B = bugbear（常见的逻辑陷阱）；PLE = pylint 的“错误”类。
+# 没有启用格式化器（ruff format）和纯风格规则：全仓库重排会产生几千行与修复无关的改动，
+# 把真正的修改淹没在评审里。以后单独做一次“只格式化”的提交时再打开。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 130
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "PLE"]
+ignore = [
+    "E702",   # 一行里用分号写两句：测试和模拟数据里为了紧凑这样写，风格问题
+    "E741",   # 变量名 l：风格问题
+    "B007",   # 循环变量没用到：风格问题
+    "B905",   # zip() 不带 strict=：现有代码里的 zip 都是等长序列，风格问题
+    "E501",   # 行宽：ruff 把一个汉字算两列宽，与本项目“130 个字符”的约定不一致
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 这些文件里故意写了零宽字符 / 控制字符：它们就是被检测、被清洗的对象
+"dfq/untrusted.py" = ["PLE2502", "PLE2515"]
+"tests/test_prompt_injection.py" = ["PLE2502", "PLE2515"]
+"tests/test_external_audit.py" = ["PLE2502", "PLE2515"]
+# 循环里定义的小函数 at() 在同一轮循环里立刻调用，不会用到“后来的 i”（已人工核对）
+"dfq/sources/xtc.py" = ["B023"]
+
+# ---------------------------------------------------------------------------
+# mypy：宽松起步。
+#   CI（.github/workflows/ci.yml）对其中列出的几个文件做“必须通过”的检查（这些文件已经干净）；
+#   对整个 dfq 包只做“报告但不失败”的检查——现有代码有几十处类型标注缺口（主要是 sqlite Row 可能为 None、
+#   dict 值被推断成 object），逐个补标注要动很多别人的文件，先不在这次修复里做。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = false
+exclude = ["^build/", "^dist/", "^\\.venv/"]

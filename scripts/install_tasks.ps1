@@ -8,7 +8,8 @@
       dfq-mail-poll  每隔一段时间读取邮件回复  python -m dfq mail-poll
     加 -WithWatch 时再创建一个默认「禁用」的任务：
       dfq-watch      每小时异常波动检查      python -m dfq watch
-    任务只在你登录时运行；moligod 同步需要打开浏览器窗口，所以不要改成「不管用户是否登录都运行」。
+    任务只在你登录时运行。moligod 自动设置提醒的功能目前已停用（只用手动模式，计划邮件里列出提醒价位）；
+    以后恢复时它需要打开浏览器窗口，所以不要改成「不管用户是否登录都运行」。
 
 .EXAMPLE
     # 在项目根目录打开 PowerShell：
