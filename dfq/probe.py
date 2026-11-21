@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from . import timeutil
+from .log import scrub_secrets
 from .sources import xtc as X
 
 HARD_LIMIT = 15
@@ -47,7 +48,7 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
     raw_dir = cfg.data_dir / "probe"
     raw_dir.mkdir(parents=True, exist_ok=True)
     now = timeutil.now()
-    R: list[str] = [f"# 小涛查接口探测报告（实测）", "",
+    R: list[str] = ["# 小涛查接口探测报告（实测）", "",
                     f"探测时间：{timeutil.fmt_min(now)}（北京时间）", ""]
     findings: dict = {}
 
@@ -69,7 +70,7 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
             R.extend([f"- **失败**：{e}", ""])
             return None
         (raw_dir / f"{endpoint}_{now:%Y%m%d%H%M}.json").write_text(
-            json.dumps({k: v for k, v in resp.items() if not k.startswith("_")}, ensure_ascii=False),
+            scrub_secrets(json.dumps({k: v for k, v in resp.items() if not k.startswith("_")}, ensure_ascii=False)),
             encoding="utf-8")
         R.append(f"- 路径：`GET /v1/sjz_api/{endpoint}`　结果：成功（code=0）"
                  + ("　来自缓存，未扣次" if resp.get("_from_cache") else ""))
@@ -90,7 +91,7 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
             findings["ammo_key1"], findings["ammo_key2"] = key1, key2
         else:
             R.append("- **没有找到名字含“子弹”的分类**，下面的列表探测沿用配置值，结果可能为空")
-        R.append(f"- 是否扣次：本步前后计数未变（文档称不扣次；以平台后台为准）")
+        R.append("- 是否扣次：本步前后计数未变（文档称不扣次；以平台后台为准）")
     R.append("")
 
     # 2) 子弹列表
@@ -103,7 +104,7 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
         raw = client.list_all(key1, key2)
         items = [it for it in (X.parse_list_item(d) for d in raw) if it]
         (raw_dir / f"item_list_pro_{now:%Y%m%d%H%M}.json").write_text(
-            json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            scrub_secrets(json.dumps(raw, ensure_ascii=False)), encoding="utf-8")
         R.append(f"- 参数：key1=`{key1}` key2=`{key2}` limit={cfg.get('xtc.list_limit')} sort=`2-2`")
         R.append(f"- 返回 {len(raw)} 条，其中可在交易行交易（oid≠0）的 {len(items)} 条")
         if raw:
@@ -188,7 +189,7 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
     resp = step("9. 昨日倒子弹最高收益（grade=5）", "ammo_zr_yc", lambda: client.ammo_yesterday(5))
     if resp is not None:
         rows = X.parse_generic_items(resp)
-        R.append(f"- 文档没有给返回示例。实际结构（节选）：")
+        R.append("- 文档没有给返回示例。实际结构（节选）：")
         R.append("```json")
         R.append(json.dumps(_shape(resp.get("data")), ensure_ascii=False, indent=1)[:1500])
         R.append("```")
@@ -225,6 +226,9 @@ def run(cfg, db, token: str | None, out_dir: Path, transport=None) -> dict:
         for it in sorted(items, key=lambda x: (-x["grade"], x["name"])):
             R.append(f"| {it['oid']} | {it['name']} | {it['grade']} | {it['price'] or 0:.0f} | {it['legacy_id']} |")
             db.upsert_item(it["oid"], it["name"], it["grade"], it["legacy_id"])
+    # 报告会被拿去分享（贴给别人看、提交到问题反馈）：落盘前再整体脱敏一遍，
+    # 万一某个接口把 token 回显在报错或返回内容里，也不会写进报告
+    R = [scrub_secrets(line) for line in R]
     text = "\n".join(R) + "\n"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "接口探测报告-实测.md"

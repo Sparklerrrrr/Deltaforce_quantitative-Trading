@@ -8,7 +8,7 @@ from datetime import datetime
 import pytest
 
 from dfq import guardrails, ledger, nodes, review, timeutil  # noqa: F401
-from dfq.mail import compose, poll
+from dfq.mail import poll
 from dfq.mail.transport import InboundMail, MailTransport
 from dfq.pipeline import Context, run_pipeline
 from dfq.sources.mock import MockXtcTransport
@@ -176,11 +176,18 @@ def test_real_positions_do_not_leak_into_paper_plan(env):
 
 
 def test_oversell_check_uses_the_same_book(env):
+    """以前超卖只在备注里写一句照样记账（审查第 1 条）；现在必须拒绝，而且只和同一本账比。"""
     cfg, db, box = env
     ledger.record_trade(db, "buy", PS12B, 100, 3600, paper=False)
-    tid = ledger.record_trade(db, "sell", PS12B, 50, 4400, paper=True)        # 模拟账本里并没有持仓
-    assert "超过模拟持仓 0" in db.one("SELECT note FROM trades WHERE id=?", (tid,))["note"]
+    with pytest.raises(ledger.LedgerError, match="超过模拟账本里的持仓 0 发"):
+        ledger.record_trade(db, "sell", PS12B, 50, 4400, paper=True)         # 模拟账本里并没有持仓
+    assert db.one("SELECT COUNT(*) AS c FROM trades")["c"] == 1               # 一行都没写
     assert ledger.positions(db)["12.7x55mm PS12B"]["qty"] == 100              # 真实持仓没被模拟卖出动到
+    ledger.record_trade(db, "buy", PS12B, 30, 3000, paper=True)
+    with pytest.raises(ledger.LedgerError, match="超过真实账本里的持仓 100 发"):
+        ledger.record_trade(db, "sell", PS12B, 101, 4400, paper=False)       # 模拟持仓不能拿来给真实卖出凑数
+    ledger.record_trade(db, "sell", PS12B, 100, 4400, paper=False)
+    assert ledger.positions(db, paper=True)["12.7x55mm PS12B"]["qty"] == 30
 
 
 def test_perf_reports_two_books_separately(env):
@@ -208,7 +215,7 @@ def run(cfg, db, when, box, paper):
 def test_end_to_end_paper_plan_reply_leaves_real_account_untouched(env):
     """完整链路：模拟计划发出 → 回复成交 → 第二晚再跑。真实账户全程不变，模拟持仓出现在模拟计划里。"""
     cfg, db, box = env
-    ctx1 = run(cfg, db, "2026-11-01 21:30:00", box, paper=True)
+    run(cfg, db, "2026-11-01 21:30:00", box, paper=True)
     plan_mail = box.sent[-1]
     assert plan_mail["subject"].startswith("【模拟计划】")
     assert db.one("SELECT paper FROM mail_log WHERE message_id=?", (plan_mail["id"],))["paper"] == 1

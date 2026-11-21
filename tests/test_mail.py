@@ -40,13 +40,16 @@ def inbound(text, *, mid="<r1@x>", frm=OWNER, reply_to="<plan-1@dfq>", date=date
 
 @pytest.fixture
 def setup(cfg, db):
-    """一份“真实”计划邮件 <plan-1@dfq> 已发出；邮箱服务商的验证标识是 mx.example.com。"""
+    """一份“真实”计划邮件 <plan-1@dfq> 前一天晚上已发出；邮箱服务商的验证标识是 mx.example.com。
+
+    （计划发出时间必须早于回复的 Date：回复写的时间早于计划发出时间，说明 Date 不可信，见 poll._trade_time。）
+    """
     cfg.set("mail.owner_address", OWNER)
     cfg.set("mail.auth.trusted_authserv", ["mx.example.com"])
     for oid, name in ((626, "12.7x55mm PS12B"), (640, "5.7x28mm SS190")):
         db.upsert_item(oid, name, 5, 0)
     db.execute("INSERT INTO mail_log(message_id,direction,subject,ts,status,plan_id,paper) "
-               "VALUES('<plan-1@dfq>','out','计划',?,'sent','20261113-2130',0)", (timeutil.fmt(timeutil.now()),))
+               "VALUES('<plan-1@dfq>','out','计划','2026-11-12 21:30:00','sent','20261112-2130',0)")
     return cfg, db
 
 
@@ -56,11 +59,14 @@ def trades(db):
 
 def test_owner_reply_is_recorded(setup):
     cfg, db = setup
+    # 卖出要有持仓（超卖会被账本拒绝）：先有一笔更早的 SS190 买入
+    ledger.record_trade(db, "buy", {"name": "5.7x28mm SS190", "oid": 640}, 150, 4600, ts=datetime(2026, 11, 12, 10, 0))
     t = FakeTransport([inbound("买 PS12B 200 3550\n卖 SS190 150 5420")])
     res = poll.poll(cfg, db, t)
-    assert trades(db) == [("buy", "12.7x55mm PS12B", 200, 3550.0, "mail"), ("sell", "5.7x28mm SS190", 150, 5420.0, "mail")]
+    assert trades(db) == [("buy", "5.7x28mm SS190", 150, 4600.0, "cli"),
+                          ("buy", "12.7x55mm PS12B", 200, 3550.0, "mail"), ("sell", "5.7x28mm SS190", 150, 5420.0, "mail")]
     assert len(res["recorded"]) == 2 and not res["errors"] and t.sent == []     # 成功默认不回信，避免轰炸
-    assert db.one("SELECT ts FROM trades")["ts"] == "2026-11-13 12:00:00"        # 用邮件时间作成交时间
+    assert {r["ts"] for r in db.query("SELECT ts FROM trades WHERE source='mail'")} == {"2026-11-13 12:00:00"}  # 用邮件时间
 
 
 def test_other_senders_are_ignored_completely(setup):
@@ -100,15 +106,16 @@ def test_same_mail_is_processed_once(setup):
 
 
 def test_parse_failure_gets_one_explaining_reply(setup):
+    """一封信里有一行看不懂：整封都不记（审查第 6 条：不能“记一半”），回信说明每一行的情况。"""
     cfg, db = setup
     t = FakeTransport([inbound("买 PS12B 200 3550\n卖 不存在 10 100")])
     res = poll.poll(cfg, db, t)
-    assert len(trades(db)) == 1 and len(res["errors"]) == 1 and len(t.sent) == 1
+    assert trades(db) == [] and len(res["errors"]) == 1 and len(t.sent) == 1
     m = t.sent[0]
-    assert m["to"] == OWNER and m["in_reply_to"] == "<r1@x>" and "没看懂" in m["body"] and "不存在" in m["body"]
-    assert "已记账" in m["body"]
+    assert m["to"] == OWNER and m["in_reply_to"] == "<r1@x>" and "没有记账" in m["body"] and "不存在" in m["body"]
+    assert "已记账" not in m["body"] and "PS12B ×200" in m["body"]               # 没问题的那行也列出来：重新回复时要一起写
     poll.poll(cfg, db, t)
-    assert len(t.sent) == 1                                                      # 不重复回信
+    assert len(t.sent) == 1 and trades(db) == []                                 # 不重复回信、不重复处理
 
 
 def test_no_reply_means_nothing_executed(setup):
@@ -120,7 +127,9 @@ def test_dry_run_records_nothing(setup):
     cfg, db = setup
     t = FakeTransport([inbound("买 PS12B 200 3550\n卖 不存在 1 1")])
     res = poll.poll(cfg, db, t, dry_run=True)
-    assert len(res["recorded"]) == 1 and trades(db) == [] and t.sent == []
+    # 有一行看不懂 → 真跑时整封都不记，所以 dry-run 也报告“会记 0 笔”和那一处问题
+    assert res["recorded"] == [] and len(res["errors"]) == 1 and trades(db) == [] and t.sent == []
+    assert len(poll.poll(cfg, db, FakeTransport([inbound("买 PS12B 200 3550")]), dry_run=True)["recorded"]) == 1
     assert db.one("SELECT COUNT(*) AS c FROM mail_log WHERE direction='in'")["c"] == 0
 
 

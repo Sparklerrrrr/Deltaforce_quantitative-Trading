@@ -84,6 +84,36 @@ def _listen_for_wake(base: Path, on_show) -> None:
 # 不改任何系统设置。用户自己设置了这个环境变量时以用户的为准。
 BROWSER_ARGS = ("--disable-features=ElasticOverscroll --enable-features=NetworkServiceInProcess2 "
                 "--disable-background-networking --disable-component-update --no-pings")
+GPU_OFF_ARGS = " --disable-gpu --disable-gpu-compositing"   # 设置里关掉“GPU 硬件加速”时追加（显卡驱动有问题、界面花屏时用）
+LOCAL_SCHEMES = ("file:", "about:", "data:")
+
+
+def browser_args(gpu: bool) -> str:
+    return BROWSER_ARGS + ("" if gpu else GPU_OFF_ARGS)
+
+
+def set_zoom(window, scale: int) -> None:
+    """界面缩放（设置 → 外观）：用浏览器组件自己的缩放，文字和图标一起清晰地放大，不是把截图拉伸。"""
+    def do():
+        window.native.webview.ZoomFactor = max(0.5, min(2.0, int(scale) / 100))
+    _on_ui_thread(window, do)
+
+
+def guard_navigation(window) -> None:
+    """页面只允许停留在本地文件上。被注入的脚本或误点的链接想把窗口带到外部网站时一律取消——
+    外部网页如果能在这个窗口里打开，就能调用 window.pywebview.api。需要打开的网页由后端 open_url 交给系统浏览器。"""
+    def on_start(sender, args):
+        try:
+            if not str(args.Uri).lower().startswith(LOCAL_SCHEMES):
+                args.Cancel = True
+        except Exception:
+            args.Cancel = True
+
+    def do():
+        window.native.webview.NavigationStarting += on_start
+    _on_ui_thread(window, do)
+
+
 THEME_BG = {"light": "#F4F6F5", "dark": "#15191A"}   # 与 app.css 的 --bg 一致：缩放窗口时露出的底色不闪
 
 
@@ -174,7 +204,9 @@ def main(config: str | Path | None = None) -> int:
         os.chdir(base)                               # 让相对路径（data/、manual_notes/）都落在这里
     except OSError:
         pass
-    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", BROWSER_ARGS)
+    ui = prefs.load(base)
+    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args(bool(ui.get("gpu", True))))
+    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False   # 新窗口请求也留在本窗口，由 guard_navigation 统一拦下
     created = layout.bootstrap(base)                 # 首次启动：建目录、从模板生成 config.yaml / .env（已有的不动）
     db_problem = check_database(base)
     app_mutex = _hold_app_mutex()                    # noqa: F841  安装 / 卸载程序靠它判断 DFQ 是否还在运行
@@ -183,24 +215,62 @@ def main(config: str | Path | None = None) -> int:
         api._emit("首次启动，已创建：" + "、".join(created) + "\n")
     if db_problem:
         api._emit(db_problem + "\n")
+    try:
+        from .. import maintenance
+        for line in maintenance.startup(base, ui):   # 自动备份数据库、清理过期日志（按“设置 → 数据与备份”）
+            api._emit(line + "\n")
+    except Exception as e:                           # 维护失败绝不影响打开程序
+        api._emit(f"启动维护没有完成（{type(e).__name__}），不影响使用。\n")
     title = f"DFQ 子弹交易决策助手 {__version__}"
-    theme = prefs.load(base).get("theme") or "light"
+    theme = ui.get("theme") or "light"
+    geo = ui.get("window") if ui.get("remember_window") else None
+    size = (1280, 820)
+    pos: dict = {}
+    if isinstance(geo, dict):
+        try:
+            size = (max(1000, int(geo["w"])), max(640, int(geo["h"])))
+            if geo.get("x") is not None and geo.get("y") is not None and _on_some_screen(webview, int(geo["x"]), int(geo["y"])):
+                pos = {"x": int(geo["x"]), "y": int(geo["y"])}
+        except (KeyError, TypeError, ValueError):
+            pass
     # 用 file:// 直接打开本地页面，不启动 pywebview 自带的本地网页服务：
     # 那个服务在“非无痕模式”下固定用 42001 端口，两个不同文件夹里的 DFQ 同时运行时，
     # 后开的那个会连到先开的那个的服务、显示它的旧页面（2026-11-15 实测踩到）。也省掉一个每 0.5 秒醒一次的线程。
     window = webview.create_window(
         title, url=(static_dir() / "index.html").resolve().as_uri(), js_api=make_bridge(api),
-        width=1280, height=820, min_size=(1000, 640), background_color=THEME_BG.get(theme, THEME_BG["light"]),
-        text_select=True)
-    state = {"allow_close": False}
+        width=size[0], height=size[1], **pos, min_size=(1000, 640), maximized=bool(isinstance(geo, dict) and geo.get("max")),
+        background_color=THEME_BG.get(theme, THEME_BG["light"]), text_select=True)
+    state = {"allow_close": False, "in_tray": False, "geo": None}
+
+    def remember_geometry():
+        """窗口大小和位置（设置 → 常规 → 记住窗口大小和位置）。最大化时只记“最大化”，不记全屏的尺寸。"""
+        try:
+            if prefs.load(base).get("remember_window") and state["geo"] is not None:
+                prefs.save(base, window=state["geo"])
+        except Exception:
+            pass
+
+    def track(*_):
+        try:
+            if not state["in_tray"]:
+                state["geo"] = {"w": window.width, "h": window.height, "x": window.x, "y": window.y,
+                                "max": bool(state.get("maximized"))}
+        except Exception:
+            pass
+    window.events.resized += track
+    window.events.moved += track
+    window.events.maximized += lambda *_: state.update(maximized=True)
+    window.events.restored += lambda *_: state.update(maximized=False)
 
     def show():
+        state["in_tray"] = False
         window.show()                                # 先显示窗口，再让浏览器控件可见（顺序反了浏览器收不到“可见”通知）
         window.restore()
         set_browser_memory(window, False)
 
     def quit_app():
         state["allow_close"] = True
+        remember_geometry()
         window.destroy()
 
     ico = icon_path()
@@ -208,7 +278,10 @@ def main(config: str | Path | None = None) -> int:
 
     def to_tray():
         if tray.available:
-            set_browser_memory(window, True)         # 先让浏览器控件进入后台（窗口还可见时它才收得到通知），再隐藏窗口
+            remember_geometry()
+            state["in_tray"] = True
+            if prefs.load(base).get("tray_saver", True):
+                set_browser_memory(window, True)     # 先让浏览器控件进入后台（窗口还可见时它才收得到通知），再隐藏窗口
             window.hide()
             tray.hidden()
         else:
@@ -222,6 +295,12 @@ def main(config: str | Path | None = None) -> int:
     api._close_handler = handle_choice               # 下划线开头：不暴露给页面
     api._theme_handler = lambda t: set_window_background(window, t)
     api._window = window                             # 导出配置时弹“选择文件夹”要用
+    api._scale_handler = lambda s: set_zoom(window, s)
+
+    def done(label: str, ok: bool):
+        if state["in_tray"] and prefs.load(base).get("notify_done", True):
+            tray.notify(f"“{label}”已{'完成' if ok else '结束（没有成功，打开 DFQ 看日志）'}", "DFQ")
+    api._done_handler = done
 
     def ask_in_page():
         try:
@@ -233,15 +312,25 @@ def main(config: str | Path | None = None) -> int:
         # 在界面线程里执行：必须马上返回。False = 取消这次关闭。
         if state["allow_close"]:
             return True
+        remember_geometry()
         action = prefs.load(base)["close_action"]
         if action == "tray":
             threading.Thread(target=to_tray, daemon=True).start()
             return False
         if action == "quit" and not api.busy:
+            state["allow_close"] = True
             return True
         threading.Thread(target=ask_in_page, daemon=True).start()   # 询问（或“退出”但还有操作在运行）
         return False
     window.events.closing += on_closing
+
+    def on_loaded(*_):
+        if not state.get("guarded"):
+            state["guarded"] = True
+            guard_navigation(window)
+        if int(ui.get("scale", 100)) != 100:
+            set_zoom(window, int(ui.get("scale", 100)))
+    window.events.loaded += on_loaded
 
     def on_started():
         tray.start()
@@ -256,6 +345,14 @@ def main(config: str | Path | None = None) -> int:
     finally:
         tray.stop()
     return 0
+
+
+def _on_some_screen(webview, x: int, y: int) -> bool:
+    """记住的位置还在某块屏幕上才用（拔掉外接显示器后，窗口不能打开在看不见的地方）。"""
+    try:
+        return any(s.x - 50 <= x < s.x + s.width - 100 and s.y - 10 <= y < s.y + s.height - 100 for s in webview.screens)
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":

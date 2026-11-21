@@ -64,6 +64,38 @@ def test_minute_labels_bad_input_does_not_crash():
     assert out == [None, datetime(2026, 11, 13, 21, 30), None, None]
 
 
+def test_minute_labels_real_api_format_with_month_and_weekday():
+    """2026-11-16 真实接口返回的写法是 "11-15 周日 23:51分"。以前只认文档里的 "25 16:02分"，
+    结果每晚 8 个品种、每个 143 个点全部被丢弃（计划里一直提示“分钟曲线为空”）。"""
+    ref = datetime(2026, 11, 16, 23, 46)
+    out = T.parse_minute_labels(["11-15 周日 23:51分", "11-16 周一 00:01分", "11-16 星期一 23:41分"], ref)
+    assert out == [datetime(2026, 11, 15, 23, 51), datetime(2026, 11, 16, 0, 1), datetime(2026, 11, 16, 23, 41)]
+
+
+def test_minute_labels_real_format_cross_year_and_out_of_range_values():
+    out = T.parse_minute_labels(["12-31 周四 23:55分", "01-01 周五 00:05分", "13-40 周五 00:05分", "01-01 周五 25:61分"],
+                                datetime(2027, 1, 1, 0, 10))
+    assert out == [datetime(2026, 12, 31, 23, 55), datetime(2027, 1, 1, 0, 5), None, None]
+
+
+def test_minute_labels_real_format_without_weekday_and_mixed_with_doc_format():
+    # 不带星期也认；和文档写法混在一起时，文档写法的点以后面那个带月份的点为锚往前推
+    ref = datetime(2026, 12, 1, 0, 30)
+    out = T.parse_minute_labels(["30 23:50分", "11-30 23:55分", "12-01 周二 00:00分", "01 00:25分"], ref)
+    assert out == [datetime(2026, 11, 30, 23, 50), datetime(2026, 11, 30, 23, 55),
+                   datetime(2026, 12, 1, 0, 0), datetime(2026, 12, 1, 0, 25)]
+
+
+def test_minute_labels_real_format_full_day_keeps_every_point():
+    ref = datetime(2026, 11, 16, 23, 46)
+    week = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+    pts = [datetime(2026, 11, 15, 23, 51) + (datetime(2026, 11, 16, 23, 41) - datetime(2026, 11, 15, 23, 51)) * i / 142
+           for i in range(143)]
+    pts = [p.replace(second=0, microsecond=0) for p in pts]
+    out = T.parse_minute_labels([f"{p:%m-%d} {week[p.weekday()]} {p:%H:%M}分" for p in pts], ref)
+    assert out == pts and None not in out
+
+
 def test_md_label_variants():
     ref = datetime(2026, 12, 26, 15, 30)
     assert T.parse_md_label("12-23 16时", ref) == datetime(2026, 12, 23, 16)

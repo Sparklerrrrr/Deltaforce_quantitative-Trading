@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .. import timeutil
 from ..log import event, get_logger
 
 log = get_logger("executor")
@@ -99,14 +101,42 @@ def get_executor(cfg, **deps) -> tuple[Executor, str | None]:
     return ManualExecutor(cfg, **deps), msg
 
 
+def _valid_qty_price(qty, price) -> bool:
+    """数量必须是正整数、价格必须是有限的正数。护栏之后不该出现别的值；出现了就说明计划文件被改坏了。"""
+    for v in (qty, price):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+            return False
+    return float(qty).is_integer()
+
+
 def plan_to_instructions(plan: dict) -> list[Instruction]:
-    out = []
+    """把**已经过护栏**的计划转成指令。
+
+    计划只能由流水线的 write_plan 生成，而它依赖护栏节点的输出（护栏失败或被关掉，计划根本不会生成）。
+    这里是交给执行器之前的最后一道检查，主要防的是“读回来的计划文件”：
+      - 已过期的计划一条指令也不出（过期计划里的价格已经不可信）；
+      - 数量 / 价格不是正常数值的条目跳过并记日志。
+    """
+    out: list[Instruction] = []
+    try:
+        if timeutil.parse_dt(str(plan["valid_until"])) <= timeutil.now():
+            event(log, logging.WARNING, "计划已过期，不生成任何执行指令", node="notify")
+            return out
+    except (KeyError, ValueError):
+        event(log, logging.ERROR, "计划缺少有效期，不生成任何执行指令", node="notify")
+        return out
     for s in plan.get("sells") or []:
+        if not _valid_qty_price(s.get("qty"), s.get("sell_price")):
+            event(log, logging.ERROR, "卖出条目的数量或价格不合法，已跳过", node="notify", item=s.get("name"))
+            continue
         out.append(Instruction(name=s["name"], side="sell", price=s["sell_price"], qty=s["qty"],
                                deadline=plan["valid_until"], oid=s.get("oid"),
                                stop_price=s.get("stop_price"), note=s.get("note", "")))
     for i in plan["items"]:
         if i["action"] == "buy" and i.get("qty"):
+            if not _valid_qty_price(i.get("qty"), i.get("buy_price")):
+                event(log, logging.ERROR, "买入条目的数量或价格不合法，已跳过", node="notify", item=i.get("name"))
+                continue
             out.append(Instruction(name=i["name"], side="buy", price=i["buy_price"], qty=i["qty"],
                                    deadline=plan["valid_until"], oid=i["oid"],
                                    stop_price=i.get("stop_price"), note=i.get("reason", "")))

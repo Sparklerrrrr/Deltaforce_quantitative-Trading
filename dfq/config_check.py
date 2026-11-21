@@ -69,6 +69,7 @@ SPEC: dict[str, tuple] = {
 
     "fees.sell_fee_rate": R(0, 0.5, hi_open=True),
     "fees.warn_diff": R(0, 0.5, lo_open=True),
+    "fees.overrides": FREE,
 
     "xtc.enabled": B(),
     "xtc.base_url": ("url",),
@@ -107,6 +108,12 @@ SPEC: dict[str, tuple] = {
     "risk.min_qty": I(1, 1000000),
     "risk.llm_max_adjust_pct": R(0, 0.5),
     "risk.max_valid_hours": N(1, 720),
+    "risk.max_loss_per_trade_pct": R(0, 0.5, lo_open=True),
+    "risk.max_holding_days": I(1, 365),
+    "risk.max_cumulative_loss_pct": R(0, 1, lo_open=True),
+    "risk.loss_window_days": I(1, 365),
+    "risk.halt_after_losses": I(1, 100),
+    "risk.abnormal_move_pct": N(1, 100),
 
     "llm.enabled": B(),
     "llm.base_url": S(allow_empty=True),
@@ -145,6 +152,7 @@ SPEC: dict[str, tuple] = {
     "mail.imap_folder": S(),
     "mail.confirm_success": B(),
     "mail.poll_lookback_days": I(1, 30),
+    "mail.reply_max_age_days": N(0.5, 30),
     "mail.auth.trusted_authserv": FREE,
 
     "executor.mode": E("manual", "auto"),
@@ -408,6 +416,12 @@ def _check_cross(data: dict, out: list[str], notes: list[str]) -> None:
     g1, g2 = num("moligod.min_gap_sec"), num("moligod.max_gap_sec")
     if g1 is not None and g2 is not None and g1 > g2:
         out.append(f"moligod.min_gap_sec（{g1:g}）不能大于 max_gap_sec（{g2:g}）")
+    if _get(data, "moligod.enabled")[1] is True:
+        from .moligod import AUTO_SYNC_AVAILABLE     # 用到时再导入：配置检查本身不该依赖账本等模块的加载顺序
+        if not AUTO_SYNC_AVAILABLE:
+            # 只提示、不报错：用户以前写了 true 的配置要照常能打开
+            notes.append("moligod.enabled 设成了 true，但自动同步功能暂时停用，按手动模式运行"
+                         "（计划邮件里会列出提醒价位，请到 moligod 网页上手动设置）")
     lot, mq = num("risk.lot_size"), num("risk.min_qty")
     if lot is not None and mq is not None and mq < lot:
         out.append(f"risk.min_qty（{mq:g}）不能小于 risk.lot_size（{lot:g}）")
@@ -417,6 +431,22 @@ def _check_cross(data: dict, out: list[str], notes: list[str]) -> None:
     fee = num("fees.sell_fee_rate")
     if fee is not None and fee == 0:
         notes.append("fees.sell_fee_rate 是 0：回本价将等于买入价。确认交易行真的不收费再这样设")
+
+    # 按品种单独设置的费率：{品种名: 费率}，0 ≤ 费率 < 1；品种不在关注清单里只提示（可能是还没加进清单）
+    ok, ov = _get(data, "fees.overrides")
+    if ok and ov is not None:
+        if not isinstance(ov, dict):
+            out.append(f"fees.overrides 应为“品种名: 费率”的对照表（例如 {{\"12.7x55mm PS12B\": 0.13}}），现在是 {_fmt(ov)}")
+        else:
+            wl = _get(data, "watchlist")[1]
+            names = {str(w.get("name") if isinstance(w, dict) else w).strip().lower()
+                     for w in (wl if isinstance(wl, list) else [])}
+            for k, v in ov.items():
+                if not _is_num(v) or not (0 <= v < 1):
+                    hint = f"　〔这是比例，要写成小数：{v:g}% 应写 {v / 100:g}〕" if _is_num(v) and 1 <= v < 100 else ""
+                    out.append(f"fees.overrides.{k} 应为 0～1 之间的小数（不含 1），现在是 {_fmt(v)}{hint}")
+                elif str(k).strip().lower() not in names:
+                    notes.append(f"fees.overrides 里的 {k} 不在关注清单里，这个费率只在记账、持仓估值时用到")
 
     ok, wl = _get(data, "watchlist")
     if ok and isinstance(wl, list) and len(wl) > 10:

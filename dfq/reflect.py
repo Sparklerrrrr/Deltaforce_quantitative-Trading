@@ -43,6 +43,8 @@ def gather(cfg, db, days: int) -> dict:
         "period_days": days,
         "params": {k: cfg.get(k) for k in OVERRIDE_WHITELIST},
         "fee_rate": cfg.fee,
+        # 下面的 perf_* 是理论触线统计（按之后的行情回看），不是真实成交；真实成交看 real_trades
+        "perf_basis": "理论触线统计：按之后的行情回看，价格碰到买入线就算成交，不代表真实成交与收益",
         "perf_final": perf["final"], "perf_rule": perf["rule"],
         "per_item": per_item,
         "decisions": recent["items"],
@@ -61,7 +63,8 @@ def rule_based_reflection(data: dict) -> dict:
     else:
         tr = f["trigger_rate"] or 0
         summary = (f"共 {f['signals']} 个买入信号，触发 {n} 个（{tr:.0%}），止盈 {f['wins']}、止损 {f['stops']}、"
-                   f"持有到期 {f['holds']}；模拟盈亏 {f['profit']:+,.0f}，规则基线 {r['profit']:+,.0f}。")
+                   f"持有到期 {f['holds']}；理论盈亏 {f['profit']:+,.0f}，规则基线 {r['profit']:+,.0f}"
+                   f"（理论触线统计，不代表真实成交）。")
     if n < 10:
         mistakes.append(f"触发样本只有 {n} 笔，不足以判断参数好坏，不建议修改。")
     else:
@@ -82,7 +85,7 @@ def rule_based_reflection(data: dict) -> dict:
                          "suggested": round(max(p["rules.sell_quantile"] - 0.05, 0.55), 2),
                          "reason": f"持有到期占 {f['holds'] / n:.0%}"})
         if f["profit"] < r["profit"]:
-            mistakes.append("最终建议的模拟盈亏不如纯规则基线：模型的调整这段时间是负贡献。")
+            mistakes.append("最终建议的理论盈亏不如纯规则基线：模型的调整这段时间是负贡献。")
     return {"summary": summary, "mistakes": mistakes, "param_suggestions": sugg,
             "prompt_suggestions": [], "watchlist_suggestions": [], "generated_by": "rules"}
 

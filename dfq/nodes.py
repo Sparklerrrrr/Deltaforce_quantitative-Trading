@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import logging
 
-from . import collect, features, guardrails, intel, ledger, moligod, plan as planmod
+from . import collect, features, guardrails, intel, moligod, plan as planmod
 from . import llm as L
-from . import reflect, review, rules, timeutil
+from . import fees, reflect, review, risk, rules, timeutil
 from .config import secret
 from .executors import get_executor, plan_to_instructions
 from .log import event, get_logger
@@ -140,9 +140,14 @@ class Features(Node):
         if not feats:
             raise RuntimeError("关注清单里没有任何可用品种")
         ctx["feats"] = feats
-        note = features.fee_check(ctx.cfg, list(feats.values()))
+        note = features.fee_check(ctx.cfg, list(feats.values()))     # 秒出价折让明显偏大时的中性提示（不是费率）
         if note:
             ctx.warn(note)
+        # 费率依据：已用平台数据核对 / 按实际成交校准 / 未核对（未核对时不把 13% 当成事实）
+        fb = fees.basis(ctx.cfg, ctx.db)
+        ctx["fee_basis"] = fb
+        for w in fb["warnings"]:
+            ctx.warn(w)
         usable = sum(1 for f in feats.values() if f.get("low_ref"))
         if usable == 0:
             ctx.warn("所有品种的历史数据都不足，今天只能全部观望。连续运行几天后会改善。")
@@ -184,7 +189,7 @@ class LLMAnalyze(Node):
         if ctx.dry_run:
             self._fallback(ctx, "dry-run 不调用模型")
             return {"mode": "offline", "reason": "dry-run"}
-        state = guardrails.portfolio_state(ctx.cfg, ctx.db)
+        state = guardrails.portfolio_state(ctx.cfg, ctx.db, persist=not ctx.dry_run)
         user = L.build_analysis_input(
             ctx.cfg, ctx["feats"], ctx["rule"], state, ctx.get("recent") or {},
             ctx.get("sources") or [], intel.recent_digests(ctx.db), intel.recent_hints(ctx.db))
@@ -209,7 +214,7 @@ class Guardrails(Node):
     provides = ("guarded", "rule_sized", "state")
 
     def run(self, ctx):
-        state = guardrails.portfolio_state(ctx.cfg, ctx.db)
+        state = guardrails.portfolio_state(ctx.cfg, ctx.db, persist=not ctx.dry_run)
         if not state["cash_known"]:
             ctx.warn(f"还没有填写哈夫币余额，仓位按假定资金 {state['cash']:,.0f} 估算。"
                      f"填写方法：python -m dfq balance set 你的余额")
@@ -238,6 +243,10 @@ class WritePlan(Node):
             mode=mode, model=client.model if (client and mode == "llm") else None,
             prompt_ver=L.PROMPT_VER if mode == "llm" else None, llm_out=ctx.get("llm_out"),
             warnings=list(ctx.warnings), run_id=ctx.run_id)
+        # 费率依据和风控状态跟着计划存下来，邮件和 `dfq plan` 都能看到
+        fb = ctx.get("fee_basis")
+        p["fee_basis"] = fb["line"] if fb else None
+        p["risk_status"] = risk.describe(ctx["state"]["risk"]) if ctx["state"].get("risk") else None
         if ctx.dry_run:
             p["plan_id"] += "-dryrun"
             d = ctx.cfg.data_dir / "plans"
@@ -265,10 +274,11 @@ class SyncAlerts(Node):
         desired = moligod.desired_alerts(ctx.cfg, ctx["plan"])
         res = moligod.sync(ctx.cfg, ctx.db, desired, dry_run=ctx.dry_run or ctx.mock)
         ctx["alert_result"] = res
-        if not res["ok"] and ctx.cfg.get("moligod.enabled"):
+        # 只有真的在自动同步时，“没同步成功”才是需要提醒的问题；手动模式下列出清单本来就是正常结果
+        if not res["ok"] and moligod.auto_enabled(ctx.cfg):
             ctx.warn("moligod 提醒没有全部自动设置成功，见邮件里的手动设置清单。")
         return {"synced": len(res["synced"]), "manual": len(res["manual"]),
-                "unmatched": len(res["unmatched"])}
+                "unmatched": len(res["unmatched"]), "mode": moligod.mode_label(ctx.cfg)}
 
     def degrade(self, ctx, err):
         desired = moligod.desired_alerts(ctx.cfg, ctx["plan"])
@@ -289,7 +299,7 @@ class Notify(Node):
         mode = ctx.get("mode", "offline")
         lines.append("分析方式：" + ("规则 + 模型" if mode == "llm" else f"仅规则基线（{ctx.get('mode_note') or '未启用模型'}）"))
         if ctx.mock:
-            lines.append("数据来源：模拟数据（--mock），价格是假的，仅用于演示流程")
+            lines.append("数据来源：【模拟数据】人为生成的行情，只用于演示，不能说明策略是否赚钱（--mock）")
         nr = db.kv_get("next_run_suggestion")
         if nr and mode == "llm":
             lines.append(f"模型建议下次运行时间：{nr.get('at')}")
@@ -307,10 +317,11 @@ class Notify(Node):
             return None
         f, r = rec["final"], rec["rule"]
         avg = "—" if f["avg_return"] is None else f"{f['avg_return']:+.1%}"
-        text = (f"近 {rec['days']} 天：买入信号 {f['signals']} 个，触发 {f['triggered']}，止盈 {f['wins']}，"
-                f"止损 {f['stops']}，单笔均收益 {avg}；模拟盈亏 {f['profit']:+,.0f}"
+        text = (f"理论触线统计（按之后的行情回看，价格碰到买入线就算成交，不代表你真的成交）——"
+                f"近 {rec['days']} 天：买入信号 {f['signals']} 个，触发 {f['triggered']}，止盈 {f['wins']}，"
+                f"止损 {f['stops']}，单笔均收益 {avg}；理论盈亏 {f['profit']:+,.0f}"
                 f"（规则基线 {r['profit']:+,.0f}，什么都不做 0）")
-        return text + "\n详情：python -m dfq perf"
+        return text + "\n详情：python -m dfq perf　　真实成交率、滑点：python -m dfq exec-stats"
 
     def run(self, ctx):
         cfg = ctx.cfg

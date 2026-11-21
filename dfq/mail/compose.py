@@ -115,11 +115,20 @@ def build_body(cfg, plan: dict, *, manual_alerts: list[dict] | None = None,
     if alert_status:
         L.append(alert_status)
     if manual_alerts:
-        L.append("请手动设置（提醒模式选“触发”）：")
+        L.append("请手动设置：打开 moligod 子弹实时价格页，点品种旁的“设置 XXX 的提醒”，"
+                 "按下面填“低于(≤)提醒”和“高于(≥)提醒”两个数，提醒模式选“触发”，再点“保存提醒”。")
         for a in manual_alerts:
             lo = f"低于(≤) {a['low']:.0f}" if a.get("low") else "低于(≤) 不设"
             hi = f"高于(≥) {a['high']:.0f}" if a.get("high") else "高于(≥) 不设"
             L.append(f"· {a['name']}：{lo}（{a.get('low_role', '买入线')}）  {hi}（{a.get('high_role', '卖出线')}）")
+        roles = {a.get("low_role", "买入线") for a in manual_alerts}
+        legend = []
+        if "买入线" in roles:
+            legend.append("买入线 = 价格跌到这里提醒你，可按计划买入")
+        if "止损线" in roles:
+            legend.append("止损线 = 你持有这个品种，价格跌到这里提醒你按计划止损卖出")
+        legend.append("卖出线 = 价格涨到这里提醒你按计划卖出")
+        L.append("说明：" + "；".join(legend) + "。提醒只是通知，买卖仍由你在游戏里手动操作。")
     L.append("")
 
     L.append("━━ 回复本邮件即可记账 ━━")
@@ -150,6 +159,8 @@ def build_body(cfg, plan: dict, *, manual_alerts: list[dict] | None = None,
         L.append("━━ 提示与降级 ━━")
         L += [f"· {w}" for w in warn]
         L.append("")
+    # 费率依据 / 风控状态随计划保存（nodes.WritePlan），所以 `dfq plan` 重看旧计划时也有
+    system_lines = list(system_lines or []) + [plan[k] for k in ("fee_basis", "risk_status") if plan.get(k)]
     if system_lines:
         L.append("━━ 系统状态 ━━")
         L += [f"· {s}" for s in system_lines]

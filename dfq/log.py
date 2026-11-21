@@ -14,6 +14,9 @@ import logging
 import os
 import re
 import sys
+import threading
+import traceback
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,9 +46,30 @@ _RE_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}")
 
 
 def register_secret(value: str | None) -> None:
-    """登记一个密钥原文，之后任何日志里出现它都会被打码。"""
-    if value and len(value) >= 4:
-        _secrets.add(value)
+    """登记一个密钥原文，之后任何日志里出现它都会被打码。
+
+    同时登记它在网址里的写法（百分号编码）：小涛查的 token 是放在 URL 参数里发出去的，
+    带 + / = 等字符的密钥在 URL 里会变成 %2B、%2F……，服务端把收到的参数原样写进报错时，
+    只登记原文就认不出来。
+    """
+    if not value or len(value) < 4:
+        return
+    _secrets.add(value)
+    for enc in (urllib.parse.quote(value, safe=""), urllib.parse.quote_plus(value, safe="")):
+        if enc != value:
+            _secrets.add(enc)
+
+
+def scrub_secrets(text: str) -> str:
+    """只把已登记的密钥原文（及其编码写法）换成 ***，不动其他内容。
+
+    用于要原样保存的接口数据（缓存文件、探测原始响应）：那里不能套 redact() 的
+    “key=… / "key": …” 规则（会把正常字段改坏），但万一服务端把密钥回显在响应里，也不能落盘。
+    """
+    for sec in sorted(_secrets, key=len, reverse=True):
+        if sec in text:
+            text = text.replace(sec, _MASK)
+    return text
 
 
 def register_env_secrets() -> None:
@@ -55,10 +79,7 @@ def register_env_secrets() -> None:
 
 def redact(text: Any) -> str:
     """把任意对象转成字符串并脱敏。"""
-    s = text if isinstance(text, str) else str(text)
-    for sec in sorted(_secrets, key=len, reverse=True):
-        if sec in s:
-            s = s.replace(sec, _MASK)
+    s = scrub_secrets(text if isinstance(text, str) else str(text))
     s = _RE_QUERY.sub(lambda m: f"{m.group(1)}={_MASK}", s)
     s = _RE_JSON.sub(lambda m: f"{m.group(1)}{_MASK}{m.group(4)}", s)
     s = _RE_BEARER.sub(lambda m: f"{m.group(1)} {_MASK}", s)
@@ -85,7 +106,10 @@ def _redact_obj(obj: Any) -> Any:
         return [_redact_obj(v) for v in obj]
     if isinstance(obj, str):
         return redact(obj)
-    return obj
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    # 其他对象（异常、路径、自定义类……）最后会被 str() 写进日志：先转成文字再脱敏
+    return redact(obj)
 
 
 class RedactFilter(logging.Filter):
@@ -103,6 +127,10 @@ class RedactFilter(logging.Filter):
             # 异常文本也可能带 URL：提前格式化并脱敏
             record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
             record.exc_info = None
+        elif record.exc_text:
+            record.exc_text = redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
         return True
 
 
@@ -137,8 +165,32 @@ class ConsoleFormatter(logging.Formatter):
         return line
 
 
+def _redacting_excepthook(exc_type, exc, tb) -> None:
+    """没被任何代码接住的异常：Python 默认把完整堆栈原样打到屏幕（计划任务会把屏幕输出写进日志文件）。
+    这里先脱敏再打印，堆栈里即使夹着带 token 的地址或密钥原文也不会外泄。"""
+    try:
+        sys.stderr.write(redact("".join(traceback.format_exception(exc_type, exc, tb))))
+    except Exception:  # 打印本身出错时，至少给出异常类型（不带内容，内容可能含密钥）
+        sys.stderr.write(f"未处理的异常：{getattr(exc_type, '__name__', exc_type)}\n")
+
+
+def _redacting_thread_hook(args) -> None:
+    if args.exc_type is SystemExit:
+        return
+    _redacting_excepthook(args.exc_type, args.exc_value, args.exc_traceback)
+
+
+def install_excepthook() -> None:
+    """把“未处理异常”的打印换成脱敏版。别人（调试器、界面框架）已经换过的就不动。"""
+    if sys.excepthook is sys.__excepthook__:
+        sys.excepthook = _redacting_excepthook
+    if threading.excepthook is threading.__excepthook__:
+        threading.excepthook = _redacting_thread_hook
+
+
 def setup_logging(log_dir: str | Path | None = None, verbose: bool = False) -> None:
     register_env_secrets()
+    install_excepthook()
     root = logging.getLogger("dfq")
     root.setLevel(logging.DEBUG)
     root.handlers.clear()

@@ -12,6 +12,16 @@
 ;   - 删除时遇到符号链接 / 目录联接只删链接本身，不会进入它指向的位置。
 ;   - 为了“完全删除”不误删别的东西：不允许装到盘符根目录、Program Files、Windows 目录；
 ;     选的文件夹里已有别的文件时会先提醒。
+;   - 计划任务（dfq-nightly 等）的名字是全用户共用的：卸载时只删除“指向本安装文件夹”的那几个，
+;     另一个安装文件夹创建的同名任务不动。
+;
+; 编译要求：Inno Setup 6.5 或更新版本（x64compatible 需要 6.3+；中文语言文件按 6.5 的消息表翻译）。
+; 中文语言文件放在仓库里（installer\Languages\ChineseSimplified.isl，取自 Inno Setup 7.1.1 安装目录的官方文件，
+; sha256 见 docs\发布流程.md），不依赖编译机上装没装中文语言包，所以本机和 GitHub 上的构建结果一致。
+
+#if Ver < EncodeVer(6, 5, 0)
+  #error DFQ.iss needs Inno Setup 6.5 or newer.
+#endif
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -26,6 +36,9 @@
   #define OutputDir "..\dist"
 #endif
 #define AppName "DFQ 子弹交易决策助手"
+; 双保险：就算打包目录里混进了个人文件（例如有人在 dist\DFQ 里试运行过 DFQ.exe），也不会被装进安装包，
+; 升级安装时更不会拿它们覆盖用户已有的配置、密钥和数据。
+#define PersonalExcludes "\config.yaml,\config.local.yaml,\.env,\.env.*,\data,*.db,*.db-wal,*.db-shm,*.eml,*.log,\unins*.*"
 
 [Setup]
 AppId={{8E3C5B71-4D2A-4F6B-9C1E-7A2D5F0B3C91}
@@ -54,7 +67,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
-Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chs"; MessagesFile: "{#RepoDir}\installer\Languages\ChineseSimplified.isl"
 
 [Messages]
 chs.ConfirmUninstall=确定要按刚才的选择卸载 %1 吗？
@@ -64,8 +77,12 @@ chs.SelectDirBrowseLabel=程序产生的配置、数据、缓存和日志都只�
 Name: "desktopicon"; Description: "在桌面创建快捷方式"; GroupDescription: "快捷方式（只是指向安装文件夹的链接，卸载时会删除）："
 Name: "startmenuicon"; Description: "在开始菜单创建快捷方式"; GroupDescription: "快捷方式（只是指向安装文件夹的链接，卸载时会删除）："; Flags: unchecked
 
+[InstallDelete]
+; 升级时先删掉旧版本的程序内部文件，避免新旧版本的库混在一起。_internal 里只有程序文件，没有任何用户数据。
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; Excludes: "{#PersonalExcludes}"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoDir}\scripts\install_tasks.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "{#RepoDir}\.env.example"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -247,7 +264,7 @@ begin
     Note.Height := ScaleY(96);
     Note.Caption := '“配置和交易数据”包括：config.yaml、界面设置、data\dfq.db（交易记录与行情历史）、' +
                     '采纳的调参、历次计划、报告和备份。以后重装到同一个文件夹会直接接着用。' + #13#10 +
-                    '无论选哪一项，都会删除程序本体、缓存、日志、临时文件，以及程序创建的 Windows 计划任务。' + #13#10 +
+                    '无论选哪一项，都会删除程序本体、缓存、日志、临时文件，以及本文件夹的 DFQ 创建的 Windows 计划任务。' + #13#10 +
                     '.env 里是明文的 API Key / token，保留时请妥善保管这个文件夹。';
 
     OK := TNewButton.Create(Form);
@@ -292,12 +309,24 @@ begin
 end;
 
 procedure RemoveScheduledTasks();
+{ 只删除指向本安装文件夹的计划任务（任务的程序在本文件夹里，或工作目录就是本文件夹）。
+  任务名 dfq-nightly 等是全用户共用的：另一个安装文件夹（或源码版）创建的同名任务不能被这里误删。 }
 var
   Code: Integer;
+  App, Cmd: String;
 begin
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN dfq-nightly /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN dfq-mail-poll /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN dfq-watch /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  App := RemoveBackslashUnlessRoot(ExpandConstant('{app}'));
+  StringChangeEx(App, '''', '''''', True);                      { PowerShell 单引号字符串里的 ' 要写两遍 }
+  Cmd := '-NoProfile -NonInteractive -Command "' +
+    '$app = ''' + App + '''; $pre = $app + ''\''; ' +
+    'foreach ($n in ''dfq-nightly'',''dfq-mail-poll'',''dfq-watch'') { ' +
+      '$t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue; if (-not $t) { continue }; ' +
+      '$mine = @($t.Actions | Where-Object { ' +
+        '([string]$_.Execute).Trim([char]34).StartsWith($pre, [StringComparison]::OrdinalIgnoreCase) -or ' +
+        '([string]$_.WorkingDirectory).TrimEnd([char]92) -ieq $app }).Count -gt 0; ' +
+      'if ($mine) { Unregister-ScheduledTask -TaskName $n -Confirm:$false } }"';
+  Log('DFQ: removing scheduled tasks that point to ' + App);
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 function IsReparsePoint(Attr: Cardinal): Boolean;

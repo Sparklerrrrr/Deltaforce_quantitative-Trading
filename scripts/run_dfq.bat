@@ -7,7 +7,11 @@ rem Usage:  run_dfq.bat <subcommand> [args...]      e.g.  run_dfq.bat run
 rem
 rem - switches to the project root (spaces in the path are fine)
 rem - appends all output to data\logs\task-YYYYMMDD.log
-rem - secrets come from USER environment variables; never put secrets in this file
+rem - secrets come from the .env file next to config.yaml (an environment
+rem   variable with the same name wins; "dfq status" says which one is used);
+rem   never put secrets in this file
+rem - because of the switch above, config.yaml, .env and data\ are always this
+rem   folder's, whatever working directory the task started in
 rem ---------------------------------------------------------------------------
 setlocal
 chcp 65001 >nul

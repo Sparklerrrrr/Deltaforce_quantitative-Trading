@@ -6,3 +6,7 @@
 *.yaml text eol=lf
 # Inno Setup 脚本：带 BOM 的 UTF-8 + CRLF
 *.iss text eol=crlf
+# Inno Setup 官方语言文件：按原样保存（不转换换行），sha256 才能与 docs/发布流程.md 里记录的一致
+*.isl -text
+# GitHub Actions 工作流
+*.yml text eol=lf
