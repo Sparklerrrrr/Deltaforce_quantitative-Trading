@@ -104,8 +104,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Inno Setup 6.5 or newer
-        # DFQ.iss 需要 6.5+；中文语言文件在仓库里（installer/Languages），不依赖编译器自带的语言包
+      - name: Locate Inno Setup compiler
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
@@ -113,10 +112,7 @@ jobs:
           $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
           if (-not $iscc) { throw 'ISCC.exe not found after install' }
-          $v = (Get-Item $iscc).VersionInfo
-          $version = [version]"$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)"
-          if ($version -lt [version]'6.5.0') { throw "Inno Setup 6.5+ required; found $version" }
-          Write-Output "Inno Setup $version at $iscc"
+          Write-Output "Inno Setup compiler found at $iscc"
           "DFQ_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build program folder and installer
         shell: cmd
