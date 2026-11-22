@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from dfq import __version__
 from dfq import gui_core as G
 from dfq import http as H
 from dfq import moligod
@@ -466,11 +467,11 @@ def _transport(status, payload, seen=None):
 def test_check_update_asks_first_then_only_reads(tmp_path):
     a = make(tmp_path)
     seen = []
-    a._http_transport = _transport(200, {"tag_name": "v1.1.0", "body": "x" * 1000}, seen)
+    a._http_transport = _transport(200, {"tag_name": "v99.0.0", "body": "x" * 1000}, seen)
     r = a.check_update()
     assert "GitHub" in r["confirm"]["text"] and seen == []
     r = a.check_update(True)
-    assert r == {"ok": True, "current": "1.0.0", "latest": "1.1.0", "newer": True, "notes": "x" * 600}
+    assert r == {"ok": True, "current": __version__, "latest": "99.0.0", "newer": True, "notes": "x" * 600}   # 不写死版本号，升级版本时测试不用跟着改
     assert seen == [("GET", W.RELEASES_API, None, None, 8)]                   # 不带任何参数和正文
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "dfq"
-version = "1.0.0"
+version = "1.1.0"
 description = "三角洲行动子弹交易决策助手：定时采集行情、生成交易计划、邮件通知人工执行、复盘打分"
 # 最低 3.11：vermin 检查源码最低需要 3.10，ruff 以 py311 为目标检查通过；
 # 本机只有 3.14，3.11～3.13 只在 CI（.github/workflows/ci.yml）上实际运行测试。

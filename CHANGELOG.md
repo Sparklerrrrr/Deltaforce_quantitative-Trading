@@ -2,7 +2,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号见 `dfq/__init__.py`。
 
-## [未发布] — 发布前修复（分支 fix/pre-release-review）
+## [1.1.0] — 2026-11-22 发布前修复
 
 外部评审提出的 14 条问题逐条核实后修复。各条结论见 `docs/安全审计报告.md`。
 
@@ -22,7 +22,7 @@
 - 新增 `scripts/scan_secrets.py`：扫描当前文件、完整 Git 历史、打包 / 安装目录，输出打码，区分疑似真实 / 占位符 / 测试假值 / 误报。
 - 构建脚本打包后先扫描，发现个人文件就不生成安装包；支持无人值守构建（`CI`、`DFQ_REQUIRE_INSTALLER`）。
 - 新增 GitHub Actions：Windows × Python 3.11–3.14 测试、ruff、vermin、mypy、pip-audit、敏感信息扫描、构建并验收安装包；
-  推送 `v*` 标签时自动构建并生成带 SHA-256 校验值和构建记录的草稿 Release（两个工作流尚未在 GitHub 上实际运行过）。
+  推送 `v*` 标签时自动构建并生成带 SHA-256 校验值和构建记录的草稿 Release（CI 已在 GitHub 上全部通过）。
 - 开发工具移到 `requirements-dev.txt`（版本固定），`requirements.txt` 只留运行需要的依赖。
 - 重写 `docs/安全审计报告.md`；新增 `docs/安装说明.md`（给用户）、`docs/发布流程.md`（给维护者）。
 
