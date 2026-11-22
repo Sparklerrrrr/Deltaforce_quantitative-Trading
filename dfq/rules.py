@@ -29,7 +29,7 @@ def stop_line(cfg, buy: float, window_min: float | None) -> int:
 
 
 def baseline(cfg, f: dict) -> dict:
-    fee = cfg.fee
+    fee = cfg.fee_for(f["name"])          # 按品种取费率（fees.overrides），没单独设置就是 fees.sell_fee_rate
     out = {
         "oid": f["oid"], "name": f["name"], "action": "watch",
         "buy_price": None, "sell_price": None, "stop_price": None,

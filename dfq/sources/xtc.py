@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,8 @@ from typing import Any
 
 from .. import timeutil
 from ..http import HttpError, Transport, request_json
-from ..log import event, get_logger, register_secret
+from ..log import event, get_logger, redact, register_secret, scrub_secrets
+from ..untrusted import strip_hidden
 
 log = get_logger("xtc")
 PROVIDER = "xtc"
@@ -52,6 +54,11 @@ class XtcClient:
         self.cache_dir = cfg.data_dir / "cache" / provider
         self.cost_this_session = 0
         self.cache_hits = 0
+        # 网络整体不通（断网、DNS 失败、平台宕机）时的熔断：连续几个接口都因网络失败后，
+        # 本次运行剩下的请求直接放弃。否则每个接口都要“超时 + 重试”一遍，每次尝试都先记账，
+        # 一晚上能白白记掉几十次额度、拖上十几分钟，后面的运行反而被日上限挡住。
+        self.network_failures = 0
+        self.max_network_failures = 2
         register_secret(token)
 
     # ---------- 基础 ----------
@@ -85,6 +92,8 @@ class XtcClient:
             try:
                 cached = json.loads(path.read_text(encoding="utf-8"))
                 age = (now - timeutil.parse_dt(cached["fetched_at"])).total_seconds()
+                if not isinstance(cached.get("response"), dict):
+                    raise ValueError("缓存内容不是对象")
                 if 0 <= age < ttl:
                     self.cache_hits += 1
                     event(log, logging.DEBUG, "缓存命中", endpoint=endpoint, age_sec=int(age))
@@ -92,13 +101,16 @@ class XtcClient:
                     resp["_fetched_at"] = cached["fetched_at"]
                     resp["_from_cache"] = True
                     return resp
-            except (ValueError, KeyError, json.JSONDecodeError):
-                pass  # 缓存坏了就当没有
+            except (ValueError, KeyError, TypeError, AttributeError, OSError):
+                pass  # 缓存坏了（含 JSONDecodeError，它是 ValueError 的子类）就当没有
 
         if self.cache_only:
             raise XtcError(f"{endpoint}：dry-run 模式不发真实请求（缓存里没有可用数据）")
         if not self.token:
             raise TokenMissing("未设置 DFQ_XTC_TOKEN（在 DFQ.exe 的“设置”页填写，或写进程序文件夹的 .env），无法请求小涛查接口")
+        if self.network_failures >= self.max_network_failures:
+            raise XtcError(f"{endpoint}：前面 {self.network_failures} 个请求都因网络问题失败，"
+                           "本次不再请求小涛查（避免白白记掉额度）。请检查网络后重新运行")
 
         cost = self._cost(endpoint)
 
@@ -120,23 +132,28 @@ class XtcClient:
                 retries=int(self.cfg.get("xtc.retries", 2)),
                 transport=self.transport, on_attempt=before_send)
         except HttpError as e:
+            if e.network:
+                self.network_failures += 1
             event(log, logging.WARNING, f"请求失败: {e}", endpoint=endpoint)
             raise XtcError(f"{endpoint} 请求失败: {e}") from None
+        self.network_failures = 0
 
         if not isinstance(resp, dict):
             raise XtcError(f"{endpoint} 响应不是对象")
         code = resp.get("code")
         if code != 0:
-            msg = resp.get("msg") or resp.get("message") or ""
-            event(log, logging.WARNING, "接口返回错误", endpoint=endpoint, code=code, api_msg=str(msg)[:120])
-            raise XtcError(f"{endpoint} 返回 code={code}: {str(msg)[:120]}")
+            # 先脱敏再截断：服务端可能把收到的 token 写进报错，截断在密钥中间会漏出半截
+            msg = redact(resp.get("msg") or resp.get("message") or "")[:120]
+            event(log, logging.WARNING, "接口返回错误", endpoint=endpoint, code=redact(code)[:20], api_msg=msg)
+            raise XtcError(f"{endpoint} 返回 code={redact(code)[:20]}: {msg}")
 
         fetched = timeutil.fmt(now)
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(
+            # 缓存要原样保存接口数据，只把万一被回显的密钥原文换掉（scrub_secrets 不动其他字段）
+            path.write_text(scrub_secrets(json.dumps(
                 {"fetched_at": fetched, "endpoint": endpoint, "params": params, "response": resp},
-                ensure_ascii=False), encoding="utf-8")
+                ensure_ascii=False)), encoding="utf-8")
         except OSError as e:
             event(log, logging.WARNING, f"缓存写入失败: {e}", endpoint=endpoint)
         event(log, logging.INFO, "请求成功", endpoint=endpoint, cost=cost,
@@ -168,6 +185,8 @@ class XtcClient:
         for page in range(1, max_pages + 1):
             resp = self.item_list_pro(p=page, limit=limit, key1=key1, key2=key2, sort=sort)
             data = resp.get("data") or []
+            if not isinstance(data, list):
+                raise XtcError("item_list_pro 返回的 data 不是列表（接口结构变了？），本页数据没有使用")
             items.extend(d for d in data if isinstance(d, dict))
             try:
                 total = int(resp.get("count")) if resp.get("count") is not None else total
@@ -198,20 +217,47 @@ class XtcClient:
         """子弹自选包收益。"""
         return self.call("ammo_pack", {"grade": grade})
 
+    def exchange_pay(self) -> dict:
+        """军需处兑换-子弹收益（fee-check 用来核对费率，1 次额度，默认缓存 6 小时）。
+
+        实测（2026-11-16）：返回 9 种 2～4 级子弹，每项有 priceMax（出售总价）、sxf（手续费）、count、name、grade、oid 等。
+        """
+        return self.call("exchange_pay")
+
 
 # ---------- 响应解析（纯函数，便于测试） ----------
 def _num(v: Any) -> float | None:
+    """接口里的数字。NaN / 无穷大 / 布尔值一律当作没有：float("nan")、float("inf") 都能“成功”，
+    一旦当成价格入库，后面的分位数、仓位计算会全部失真。"""
     try:
-        if v is None or v == "":
+        if v is None or v == "" or isinstance(v, bool):
             return None
-        return float(v)
-    except (TypeError, ValueError):
+        f = float(v)
+        return f if math.isfinite(f) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
+def _pos(v: Any) -> float | None:
+    """价格：只接受正数。0 和负数是接口出错的表现，当作没有数据。"""
+    f = _num(v)
+    return f if f is not None and f > 0 else None
+
+
+def _data_dict(resp: Any) -> dict:
+    """取响应里的 data 对象；结构不对（不是对象）时当作空，而不是让整个采集崩掉。"""
+    data = resp.get("data") if isinstance(resp, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def _arr(data: dict, key: str) -> list:
+    v = data.get(key)
+    return v if isinstance(v, list) else []
+
+
 def parse_minute_curve(resp: dict, ref: datetime) -> list[tuple[datetime, float]]:
-    data = resp.get("data") or {}
-    labels, prices = data.get("a") or [], data.get("b") or []
+    data = _data_dict(resp)
+    labels, prices = _arr(data, "a"), _arr(data, "b")
     times = timeutil.parse_minute_labels([str(x) for x in labels], ref)
     out: dict[datetime, float] = {}
     for t, p in zip(times, prices):
@@ -222,10 +268,10 @@ def parse_minute_curve(resp: dict, ref: datetime) -> list[tuple[datetime, float]
 
 
 def parse_hour_curve(resp: dict, ref: datetime) -> list[dict]:
-    data = resp.get("data") or {}
-    labels = data.get("a") or []
-    b, mx, mn = data.get("b") or [], data.get("max") or [], data.get("min") or []
-    yc = data.get("yc") or []
+    data = _data_dict(resp)
+    labels = _arr(data, "a")
+    b, mx, mn = _arr(data, "b"), _arr(data, "max"), _arr(data, "min")
+    yc = _arr(data, "yc")
     rows = []
     for i, lab in enumerate(labels):
         t = timeutil.parse_md_label(str(lab), ref)
@@ -246,10 +292,10 @@ def parse_hour_curve(resp: dict, ref: datetime) -> list[dict]:
 
 
 def parse_day_curve(resp: dict, ref: datetime) -> list[dict]:
-    data = resp.get("data") or {}
-    labels = data.get("a") or []
-    b, mx, mn = data.get("b") or [], data.get("max") or [], data.get("min") or []
-    mxd, mnd = data.get("maxD") or [], data.get("minD") or []
+    data = _data_dict(resp)
+    labels = _arr(data, "a")
+    b, mx, mn = _arr(data, "b"), _arr(data, "max"), _arr(data, "min")
+    mxd, mnd = _arr(data, "maxD"), _arr(data, "minD")
     rows = []
     for i, lab in enumerate(labels):
         t = timeutil.parse_md_label(str(lab), ref)
@@ -271,17 +317,20 @@ def parse_day_curve(resp: dict, ref: datetime) -> list[dict]:
 
 def parse_list_item(d: dict) -> dict | None:
     from ..fees import parse_shop_sell_type
+    if not isinstance(d, dict):
+        return None
     oid = _num(d.get("oid"))
-    name = d.get("name")
-    if not oid or not name:
+    # 品种名来自外部接口：去掉控制字符和不可见字符、限长（它会进数据库、报告，并参与名称匹配）
+    name = strip_hidden(str(d.get("name") or "")).strip()[:100]
+    if not oid or oid < 0 or not name:
         return None  # oid 为 0 = 不能在交易行交易
     sst = parse_shop_sell_type(d.get("ShopSellType"))
     return {
-        "oid": int(oid), "name": str(name).strip(),
+        "oid": int(oid), "name": name,
         "grade": int(_num(d.get("grade")) or 0), "legacy_id": int(_num(d.get("id")) or 0),
-        "price": _num(d.get("price")), "bl": _num(d.get("bl")),
-        "day7_price": _num(d.get("day_7_price")), "day7_bl": _num(d.get("day_7_bl")),
-        "day30_price": _num(d.get("day_30_price")), "day30_bl": _num(d.get("day_30_bl")),
+        "price": _pos(d.get("price")), "bl": _num(d.get("bl")),
+        "day7_price": _pos(d.get("day_7_price")), "day7_bl": _num(d.get("day_7_bl")),
+        "day30_price": _pos(d.get("day_30_price")), "day30_bl": _num(d.get("day_30_bl")),
         "sell_method": sst["method"], "sell_level": sst["level"], "quick_price": sst["quick_price"],
     }
 
@@ -289,16 +338,50 @@ def parse_list_item(d: dict) -> dict | None:
 def parse_ammo_day(resp: dict) -> list[dict]:
     """今日低价预测：data = [{hour: 0..23, data: [{oid,name,grade,price}, ...]}, ...]"""
     out = []
-    for bucket in resp.get("data") or []:
+    buckets = resp.get("data") if isinstance(resp, dict) else None
+    for bucket in buckets if isinstance(buckets, list) else []:
         if not isinstance(bucket, dict):
             continue
         hour = _num(bucket.get("hour"))
-        for it in bucket.get("data") or []:
+        if hour is not None and not 0 <= hour <= 23:
+            hour = None
+        for it in _arr(bucket, "data"):
             if isinstance(it, dict) and it.get("name"):
-                out.append({"oid": int(_num(it.get("oid")) or 0), "name": str(it["name"]),
+                out.append({"oid": int(_num(it.get("oid")) or 0),
+                            "name": strip_hidden(str(it["name"])).strip()[:100],
                             "grade": int(_num(it.get("grade")) or 0),
                             "hour": int(hour) if hour is not None else None,
-                            "price": _num(it.get("price"))})
+                            "price": _pos(it.get("price"))})
+    return out
+
+
+def parse_exchange_pay(resp: dict) -> list[dict]:
+    """军需处兑换-子弹收益 → [{name, grade, oid, count, price_max, sxf, rate}]，rate = sxf ÷ priceMax。
+
+    不假设 data 的嵌套层次：遍历整个 data，凡是同时带 priceMax 和 sxf 的对象都收下；
+    出售总价不是正数、手续费为负或不小于出售价的行视为坏数据，跳过。
+    """
+    out: list[dict] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if "priceMax" in node and "sxf" in node:
+                pm, sxf = _pos(node.get("priceMax")), _num(node.get("sxf"))
+                if pm is not None and sxf is not None and 0 <= sxf < pm:
+                    out.append({"name": str(node.get("name") or "").strip() or None,
+                                "grade": int(_num(node.get("grade")) or 0) or None,
+                                "oid": int(_num(node.get("oid")) or 0) or None,
+                                "count": _num(node.get("count")), "price_max": pm, "sxf": sxf,
+                                "rate": sxf / pm})
+                return
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(resp.get("data") if isinstance(resp, dict) else None)
     return out
 
 

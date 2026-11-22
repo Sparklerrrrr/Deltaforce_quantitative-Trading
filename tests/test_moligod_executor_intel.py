@@ -46,13 +46,20 @@ def test_sync_disabled_falls_back_to_manual_list(cfg, db):
     assert M.sync(cfg, db, [])["ok"]
 
 
-def test_sync_dry_run_never_touches_browser(cfg, db):
+@pytest.fixture
+def auto_sync_available(monkeypatch):
+    """自动同步目前整体停用（AUTO_SYNC_AVAILABLE = False）。下面几个测试演练的是保留下来的自动同步代码，
+    所以临时把总开关打开；默认（停用）时的行为见 tests/test_moligod_gate.py。"""
+    monkeypatch.setattr(M, "AUTO_SYNC_AVAILABLE", True)
+
+
+def test_sync_dry_run_never_touches_browser(cfg, db, auto_sync_available):
     cfg.set("moligod.enabled", True)
     res = M.sync(cfg, db, M.desired_alerts(cfg, PLAN), dry_run=True)
     assert "dry-run" in res["status"] and len(res["manual"]) == 2 and res["synced"] == []
 
 
-def test_sync_noop_when_nothing_changed(cfg, db):
+def test_sync_noop_when_nothing_changed(cfg, db, auto_sync_available):
     cfg.set("moligod.enabled", True)
     for a in M.desired_alerts(cfg, PLAN):
         db.execute("INSERT INTO moligod_alerts(name,low,high,synced_at,verified) VALUES(?,?,?,?,1)",
@@ -61,7 +68,7 @@ def test_sync_noop_when_nothing_changed(cfg, db):
     assert res["ok"] and "无需改动" in res["status"] and res["manual"] == []
 
 
-def test_sync_without_playwright_degrades(cfg, db, monkeypatch):
+def test_sync_without_playwright_degrades(cfg, db, monkeypatch, auto_sync_available):
     cfg.set("moligod.enabled", True)
     import builtins
     real = builtins.__import__

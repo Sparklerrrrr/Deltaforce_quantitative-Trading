@@ -70,6 +70,7 @@ def test_model_cannot_turn_a_loser_into_a_buy(cfg):
 
 def test_quantity_cut_by_position_cap(cfg):
     cfg.set("risk.max_position_pct", 0.25)                # 单品种最多 75 万
+    cfg.set("risk.max_loss_per_trade_pct", 1.0)           # 只测持仓占比这一道；单笔亏损上限另有测试（test_risk.py）
     out = run(cfg, [{"oid": 626, "action": "buy", "buy_price": 3600, "sell_price": 4400, "qty": 5000}])
     it = out["items"][0]
     assert it["qty"] == 200                               # 750000 // 3600 = 208 → 按 10 取整

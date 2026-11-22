@@ -41,7 +41,7 @@ def test_parse_garbage(bad):
 @pytest.mark.parametrize("header", [
     GOOD,
     "mx.example.com; dmarc=pass header.from=example.com",
-    "mx.example.com; dmarc=pass",                                   # 没写 header.from：From 已另行核对
+    "mx.example.com; dkim=pass header.d=example.com; dmarc=pass",  # dmarc 没写 header.from 不算数，但 DKIM 对齐
     "mx.example.com; dkim=pass header.d=example.com",
     "mx.example.com; dkim=pass header.i=@example.com",
     "mx.example.com; spf=pass smtp.mailfrom=bounce@example.com",
@@ -60,6 +60,8 @@ def test_verified(header):
     ("mx.example.com; dkim=pass header.d=example.com.evil.com", "没有任何一项验证"),  # 形似域名
     ("mx.example.com; dkim=pass header.d=notexample.com", "没有任何一项验证"),
     ("mx.example.com; dmarc=pass header.from=evil.com", "不是你的"),
+    # 审查第 6 条：dmarc=pass 却没写 header.from，不知道验证的是哪个域 → 不能放行（旧版本放行了）
+    ("mx.example.com; dmarc=pass", "header.from"),
     ("mx.example.com; spf=softfail smtp.mailfrom=me@example.com; dkim=none; dmarc=none", "没有任何一项验证"),
     ("mx.example.com; spf=pass smtp.helo=example.com", "没有任何一项验证"),          # 只有 HELO 通过不算
     ("mx.example.com; none", "没有任何一项验证"),

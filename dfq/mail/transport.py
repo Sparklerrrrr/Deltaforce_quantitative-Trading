@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import hashlib
 import html
 import imaplib
 import re
@@ -39,6 +40,35 @@ class InboundMail:
     references: list[str] = field(default_factory=list)
     auth_results: list[str] = field(default_factory=list)   # 原始 Authentication-Results 头（自上而下）
     from_count: int = 1                                     # From 头里一共有几个地址；不是 1 就可疑
+    from_problem: str = ""                                  # From 头写法可疑的原因（空 = 没发现问题）
+    malformed: str = ""                                     # 整封信解析失败的原因（空 = 正常）
+
+
+MAX_TEXT_CHARS = 200_000          # 正文最多取这么多字符：回复记账只需要开头几行，超大正文只会拖慢解析
+MAX_RAW_BYTES = 20_000_000        # 整封信（含附件）超过这么大就不解析，直接标成“无法处理”
+MAX_ID_CHARS = 500
+
+
+class MailTooLarge(ValueError):
+    """整封邮件超过 MAX_RAW_BYTES。"""
+_ADDRLIKE = re.compile(r"[^\s<>()\",;:@\[\]\\]+@[^\s<>()\",;:@\[\]\\]+")
+
+
+def norm_msgid(value) -> str:
+    """把 Message-ID 规范成唯一的写法：去掉注释和空白、去掉尖括号、统一小写，再统一加回尖括号。
+
+    同一封信的编号可能被写成 `<A@B>`、`<a@b>`、`<a@b> (resent)`、`a@b`；不统一的话，
+    去重会把它们当成不同的信，重复记账。写法太离谱（超长、没有内容）返回空串。
+    """
+    if not isinstance(value, str):
+        return ""
+    s = re.sub(r"\([^()]{0,200}\)", " ", value[:2000])        # 注释（不处理嵌套：嵌套的注释本来就不正常）
+    m = re.search(r"<([^<>]*)>", s)
+    inner = m.group(1) if m else s
+    inner = re.sub(r"\s+", "", inner).lower()
+    if not inner or len(inner) > MAX_ID_CHARS or any(ord(c) < 33 or ord(c) == 127 for c in inner):
+        return ""
+    return f"<{inner}>"
 
 
 def build_message(subject: str, body: str, *, sender: str, to: str, in_reply_to: str | None = None,
@@ -77,10 +107,13 @@ def extract_text(msg) -> str:
             continue
         try:
             content = part.get_content()
-        except (LookupError, UnicodeDecodeError, KeyError, AttributeError, TypeError):
+        except (LookupError, UnicodeDecodeError, KeyError, AttributeError, TypeError, ValueError):
             # 畸形邮件（空正文、未知编码……）：尽力解码，解不出就当空
             payload = part.get_payload(decode=True) or b""
             content = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else ""
+        if not isinstance(content, str):
+            content = ""
+        content = content[:MAX_TEXT_CHARS]
         if part.get_content_subtype() == "plain" and plain is None:
             plain = content
         elif part.get_content_subtype() == "html" and rich is None:
@@ -90,30 +123,140 @@ def extract_text(msg) -> str:
     return html_to_text(rich) if rich else ""
 
 
-def to_inbound(msg) -> InboundMail:
-    date = None
+def _raw_headers(msg) -> list[tuple[str, str]]:
+    """原样的邮件头（不解码 =?utf-8?...?= 编码字、只把折行接回一行）。读不出来的头跳过。"""
+    out: list[tuple[str, str]] = []
     try:
-        d = parsedate_to_datetime(msg.get("Date", ""))
-        if d is not None:
-            if d.tzinfo is None:
-                d = d.replace(tzinfo=timezone.utc)
-            date = d.astimezone(timeutil.BJ).replace(tzinfo=None)
-    except (TypeError, ValueError):
-        pass
-    refs = re.findall(r"<[^>]+>", str(msg.get("References", "")))
-    # 多个 From 头 / 一个 From 里多个地址，是伪造邮件的常见手法：
-    # 服务商验证的可能是其中一个，而我们读到的是另一个。数清楚，交给上层拒绝。
-    from_headers = [str(h) for h in (msg.get_all("From") or [])]
-    from_addrs = [a for _, a in getaddresses(from_headers) if a]
-    irt = re.findall(r"<[^>]+>", str(msg.get("In-Reply-To", "")))
+        items = list(msg.raw_items())
+    except Exception:  # noqa: BLE001 —— 畸形邮件：当没有头
+        return out
+    for k, v in items:
+        try:
+            out.append((str(k).strip().lower(), re.sub(r"\r?\n(?=[ \t])", "", str(v))))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _count_raw_from_lines(raw: bytes) -> int:
+    """直接数原始字节里的 From 头行：`From : x`（冒号前有空格）、放在第一行的 `From :` 等写法，
+    Python 的解析器会漏掉或改名，而某些邮箱服务商可能认它 —— 两边读到的发件人不一样就是伪造的机会。"""
+    head = re.split(rb"\r?\n\r?\n", raw[:200_000], maxsplit=1)[0]
+    return len(re.findall(rb"(?mi)^from[ \t]*:", head))
+
+
+def _parse_from(msg, headers: list[tuple[str, str]], raw: bytes | None) -> tuple[str, int, str]:
+    """(地址, 地址个数, 可疑原因)。要求：恰好一个 From 头、里面恰好一个地址、显示名和注释里不出现 @。
+
+    多个 From 头 / 一个 From 里多个地址 / 把你的地址写进显示名（`me@example.com <attacker@evil.com>`），
+    都是伪造邮件的常见手法：服务商验证的可能是其中一个，而我们读到的是另一个。
+    """
+    raw_vals = [v for k, v in headers if k == "from"]
+    n_hdr = len(raw_vals)
+    if raw is not None:
+        n_hdr = max(n_hdr, _count_raw_from_lines(raw))
+    try:
+        hdrs = msg.get_all("From") or []
+        addrs: list[str] = []
+        named_group = False
+        for h in hdrs:
+            for g in getattr(h, "groups", ()):
+                named_group = named_group or g.display_name is not None
+            addrs += [str(a.addr_spec) for a in getattr(h, "addresses", ())]
+        decoded = [str(h) for h in hdrs]
+        if not hdrs and raw_vals:                       # 非 EmailPolicy 的旧式对象：退回到地址列表解析
+            addrs = [a for _, a in getaddresses(raw_vals) if a]
+            decoded = raw_vals
+    except Exception as e:  # noqa: BLE001 —— 例如编码字解出了换行：按可疑处理，绝不让整批轮询失败
+        return "", max(n_hdr, 1), f"From 头无法解析（{type(e).__name__}）"
+    first = addrs[0].lower() if addrs and "@" in addrs[0] else ""
+    count = len(addrs) if n_hdr <= 1 else max(len(addrs), 2)
+    if n_hdr == 0:
+        return first, count, "没有 From 头"
+    if n_hdr > 1:
+        return first, count, "有多个 From 头"
+    if len(addrs) != 1 or not first:
+        return first, count, "From 里不是恰好一个地址"
+    if named_group:
+        return first, count, "From 用了群组写法"
+    for text in raw_vals + decoded:
+        if len(text) > 998:
+            return first, count, "From 头太长"
+        if any((ord(c) < 32 and c not in "\t") or ord(c) == 127 for c in text):
+            return first, count, "From 头里有控制字符"
+        like = [a.lower().rstrip(".") for a in _ADDRLIKE.findall(text)]
+        if text.count("@") != len(like) or any(a != first for a in like):
+            return first, count, "From 的显示名或注释里出现了别的地址或多余的 @（把别人的地址伪装成你的常见手法）"
+        if text.count("<") > 1 or text.count(">") > 1 or ":" in text or ";" in text:
+            return first, count, "From 的写法不正常（多个尖括号、群组或路由写法）"
+    return first, count, ""
+
+
+def _parse_date(msg) -> datetime | None:
+    """Date 头 → 北京时间。写错、溢出、离谱的年份一律当没有（成交时间另有规则兜底，见 poll.py）。"""
+    try:
+        d = parsedate_to_datetime(str(msg.get("Date", "") or ""))
+        if d is None:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        d = d.astimezone(timeutil.BJ).replace(tzinfo=None)
+        return d if 2000 <= d.year <= 2100 else None
+    except Exception:  # noqa: BLE001 —— OverflowError、ValueError、TypeError……
+        return None
+
+
+def to_inbound(msg, raw: bytes | None = None) -> InboundMail:
+    """把一封邮件转成 InboundMail。任何一个头写坏了都不抛异常：对应字段留空或标为可疑，交给上层拒绝。
+
+    raw：原始字节（有的话），用来核对 From 头的行数。
+    """
+    headers = _raw_headers(msg)
+
+    def first(name: str) -> str:
+        return next((v for k, v in headers if k == name), "")
+
+    from_addr, from_count, from_problem = _parse_from(msg, headers, raw)
+    refs = [i for i in (norm_msgid(x) for x in re.findall(r"<[^<>]{1,500}>", first("references"))[-50:]) if i]
+    irt = [i for i in (norm_msgid(x) for x in re.findall(r"<[^<>]{1,500}>", first("in-reply-to"))) if i]
+    try:
+        subject = str(msg.get("Subject", "") or "")[:300]
+    except Exception:  # noqa: BLE001
+        subject = ""
+    malformed = ""
+    try:
+        text = extract_text(msg)
+    except Exception as e:  # noqa: BLE001
+        text, malformed = "", f"正文无法解析（{type(e).__name__}）"
     return InboundMail(
-        message_id=str(msg.get("Message-ID", "")).strip(),
-        from_addr=from_addrs[0].lower() if from_addrs else "",
-        subject=str(msg.get("Subject", "")),
-        date=date, text=extract_text(msg),
+        message_id=norm_msgid(first("message-id")),
+        from_addr=from_addr, subject=subject, date=_parse_date(msg), text=text,
         in_reply_to=irt[0] if irt else "", references=refs,
-        auth_results=[str(h) for h in (msg.get_all("Authentication-Results") or [])],
-        from_count=len(from_addrs) if len(from_headers) <= 1 else max(len(from_addrs), 2))
+        auth_results=[v for k, v in headers if k == "authentication-results"],
+        from_count=from_count, from_problem=from_problem, malformed=malformed)
+
+
+def parse_raw(raw: bytes, fallback_id: str = "") -> InboundMail:
+    """从原始字节得到 InboundMail；整封都解析不了时返回一条标了 malformed 的记录（不抛异常）。
+
+    这样一封畸形邮件只会被记一次“无法解析”，不会让整批轮询失败、也不会每次都重新处理。
+    """
+    try:
+        if len(raw) > MAX_RAW_BYTES:
+            # 回复记账只需要几行字；几十 MB 的信（大附件）解析起来很慢，又不可能是成交回复
+            raise MailTooLarge(f"邮件太大（{len(raw) // 1_000_000} MB，上限 {MAX_RAW_BYTES // 1_000_000} MB）")
+        msg = email.message_from_bytes(raw, policy=email.policy.default)
+        m = to_inbound(msg, raw)
+    except Exception as e:  # noqa: BLE001
+        mid = re.search(rb"(?mi)^message-id[ \t]*:[ \t]*(<[^<>\r\n]{1,500}>)", raw[:200_000])
+        why = (f"{e}，没有处理；记账回复请只写成交记录、不要带附件" if isinstance(e, MailTooLarge)
+               else f"整封邮件无法解析（{type(e).__name__}）")
+        m = InboundMail(message_id=norm_msgid(mid.group(1).decode("ascii", "replace")) if mid else "",
+                        from_addr="", subject="", date=None, text="", from_count=0, malformed=why)
+    if not m.message_id:
+        # 没有编号的信：用内容的指纹当编号，保证同一封只处理一次
+        m.message_id = fallback_id or f"<noid-{hashlib.sha256(raw).hexdigest()[:32]}@dfq.local>"
+    return m
 
 
 class MailTransport(ABC):
@@ -147,15 +290,15 @@ class FileTransport(MailTransport):
         return str(msg["Message-ID"])
 
     def fetch(self, since, from_addr=None) -> list[InboundMail]:
-        out = []
+        out: list[InboundMail] = []
         if not self.inbox.exists():
             return out
         for p in sorted(self.inbox.glob("*.eml")):
-            msg = email.message_from_bytes(p.read_bytes(), policy=email.policy.default)
-            m = to_inbound(msg)
-            if not m.message_id:
-                m.message_id = f"<file-{p.name}>"
-            out.append(m)
+            try:
+                raw = p.read_bytes()
+            except OSError:
+                continue                     # 文件正被别的程序占用：下次再读
+            out.append(parse_raw(raw, fallback_id=norm_msgid(f"<file-{p.name}>")))   # 畸形的也返回（标了 malformed）
         return out
 
 
@@ -180,7 +323,7 @@ class SmtpImapTransport(MailTransport):
         ctx = ssl.create_default_context()
         try:
             if port == 465:
-                server = smtplib.SMTP_SSL(host, port, timeout=30, context=ctx)
+                server: smtplib.SMTP = smtplib.SMTP_SSL(host, port, timeout=30, context=ctx)
             else:
                 server = smtplib.SMTP(host, port, timeout=30)
                 server.starttls(context=ctx)
@@ -216,10 +359,9 @@ class SmtpImapTransport(MailTransport):
             ids = data[0].split()[-200:]
             for num in ids:
                 typ, parts = conn.fetch(num, "(BODY.PEEK[])")
-                if typ != "OK" or not parts or not isinstance(parts[0], tuple):
+                if typ != "OK" or not parts or not isinstance(parts[0], tuple) or not isinstance(parts[0][1], bytes):
                     continue
-                msg = email.message_from_bytes(parts[0][1], policy=email.policy.default)
-                out.append(to_inbound(msg))
+                out.append(parse_raw(parts[0][1]))      # 一封畸形邮件不会让整批失败（标成 malformed 交给上层）
         except (imaplib.IMAP4.error, OSError) as e:
             raise MailError(f"读取邮件失败: {type(e).__name__}: {e}") from None
         finally:

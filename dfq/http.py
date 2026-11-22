@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import time
@@ -54,6 +55,10 @@ def check_secure_url(url: str, *, allow_http_local: bool = False, what: str = "�
         raise InsecureUrl(f"{what} 必须是以 https:// 开头的完整网址")
     if u.username or u.password:
         raise InsecureUrl(f"{what} 里不要写用户名或密码（密钥只放环境变量）")
+    if u.query or u.fragment or "?" in raw or "#" in raw:
+        # 程序会在这个地址后面拼路径、另外附加参数，带 ? / # 的地址本来就用不了；
+        # 更要紧的是有人会把 ?key=… 这类密钥直接粘进地址里，而地址会出现在配置文件、界面和日志里。
+        raise InsecureUrl(f"{what} 里不要带 ? 或 # 后面的参数（密钥只放在“设置”页或 .env 里）")
     if u.scheme == "http":
         if not is_loopback_host(host):
             raise InsecureUrl(f"{what} 用的是不加密的 http://，密钥会被明文发到 {host}。请改用 https://")
@@ -75,6 +80,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(_NoRedirect)
+# 本机 http 服务（只有 allow_http_local 时才会用到）一律直连，不走系统代理：
+# 走代理的话，明文的 Authorization 头会先交给代理程序，“数据不出这台电脑”就不成立了。
+_direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+# 单个响应的大小上限。正常接口返回几十 KB；对方出错或被劫持时返回巨量数据，不能把内存吃光。
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class HttpError(Exception):
@@ -82,6 +93,23 @@ class HttpError(Exception):
         super().__init__(redact(message))
         self.status = status
         self.retryable = retryable
+
+    @property
+    def network(self) -> bool:
+        """网络层面的失败（连不上、超时）：没有拿到任何 HTTP 状态码。"""
+        return self.status is None and self.retryable
+
+
+def _read_capped(resp) -> bytes:
+    data = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise HttpError(f"响应超过 {MAX_RESPONSE_BYTES // (1024 * 1024)} MB，已放弃（接口可能出错了）")
+    return data
+
+
+def _snippet(raw: bytes, limit: int = 200) -> str:
+    """错误正文的摘录：先整体脱敏再截断。反过来做的话，密钥正好跨在截断处时，前半截会漏出去。"""
+    return redact(raw[:64 * 1024].decode("utf-8", errors="replace"))[:limit]
 
 
 Transport = Callable[[str, str, dict | None, bytes | None, dict, float], tuple[int, bytes]]
@@ -93,19 +121,21 @@ def urllib_transport(method: str, url: str, params: dict | None, body: bytes | N
     if params:
         full = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
     req = urllib.request.Request(full, data=body, method=method, headers=headers)
+    opener = _direct_opener if urllib.parse.urlsplit(url).scheme == "http" else _opener
     try:
-        with _opener.open(req, timeout=timeout) as resp:
-            return resp.status, resp.read()
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.status, _read_capped(resp)
     except urllib.error.HTTPError as e:
         payload = b""
         try:
-            payload = e.read() or b""
+            payload = e.read(64 * 1024) or b""
         except Exception:
             pass
         return e.code, payload
     except urllib.error.URLError as e:
         raise HttpError(f"网络错误 {redact_url(url)}: {e.reason}", retryable=True) from None
-    except (TimeoutError, OSError) as e:
+    except (TimeoutError, OSError, http.client.HTTPException) as e:
+        # HTTPException：连接中途断开、响应残缺（IncompleteRead 等），不是 OSError，以前会原样漏到上层
         raise HttpError(f"网络错误 {redact_url(url)}: {type(e).__name__}", retryable=True) from None
 
 
@@ -147,8 +177,7 @@ def request_json(method: str, url: str, *, params: dict | None = None, json_body
                     return json.loads(raw.decode("utf-8", errors="replace"))
                 except json.JSONDecodeError:
                     raise HttpError(f"响应不是合法 JSON {redact_url(url)}", status=status) from None
-            snippet = raw[:200].decode("utf-8", errors="replace")
-            last = HttpError(f"HTTP {status} {redact_url(url)}: {snippet}", status=status,
+            last = HttpError(f"HTTP {status} {redact_url(url)}: {_snippet(raw)}", status=status,
                              retryable=status >= 500 or status == 429)
         if not last.retryable or attempt >= retries:
             break

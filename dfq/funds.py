@@ -2,6 +2,7 @@
 
 默认方式（已实现）：手动输入余额 + 按成交记录自动推算，见 ledger.balance()。
     python -m dfq balance set 5000000
+期初库存（用本程序之前就有的子弹，python -m dfq inventory add）不动余额：那笔钱是以前花的。
 
 可选方式（**未实现，只保留接口和说明**）：通过三角洲官方网页接口查询余额和流水。
 没有实现的原因：
@@ -46,6 +47,7 @@ def current_balance(cfg, db) -> dict:
             return {"known": True, "amount": amount, "source": "official", "note": ""}
         except FundsUnavailable as e:
             note = f"官方查询不可用，已回退到手动余额：{e}"
-    bal = ledger.balance(db, cfg.fee)
+    # 按品种取费率（W2 的 cfg.fee_for）；旧配置对象没有它时退回统一费率
+    bal = ledger.balance(db, getattr(cfg, "fee_for", None) or cfg.fee)
     return {"known": bal["known"], "amount": bal["amount"], "source": "manual", "note": note,
             "base": bal["base"], "base_ts": bal["base_ts"]}

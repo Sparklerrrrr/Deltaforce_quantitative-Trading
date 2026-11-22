@@ -143,6 +143,15 @@ def test_parse_minute_curve_from_doc_shape():
                    (datetime(2026, 12, 26, 15, 57), 20640.0)]
 
 
+def test_parse_minute_curve_from_real_response_shape():
+    """真实接口的响应（2026-11-16 实测）：标签带月份和星期，价格是整数。"""
+    resp = {"code": 0, "message": "成功", "msg": "成功",
+            "data": {"a": ["11-15 周日 23:51分", "11-16 周一 00:01分", "11-16 周一 23:41分"], "b": [5145, 5150, 5077]}}
+    pts = X.parse_minute_curve(resp, datetime(2026, 11, 16, 23, 46))
+    assert pts == [(datetime(2026, 11, 15, 23, 51), 5145.0), (datetime(2026, 11, 16, 0, 1), 5150.0),
+                   (datetime(2026, 11, 16, 23, 41), 5077.0)]
+
+
 def test_parse_minute_curve_drops_bad_points():
     resp = {"data": {"a": ["13 21:00分", "13 21:05分", "bad", "13 21:15分"], "b": [100, None, 5, 0]}}
     assert X.parse_minute_curve(resp, datetime(2026, 11, 13, 21, 30)) == [(datetime(2026, 11, 13, 21, 0), 100.0)]

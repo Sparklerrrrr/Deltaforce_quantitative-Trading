@@ -1,0 +1,138 @@
+# 持续集成：每次推送和拉取请求都跑。
+# 注意：这个文件写好后还没有在 GitHub 上实际运行过（2026-11-21）；第一次推送后请看 Actions 页面的结果再据此调整。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------- 测试：Windows × Python 3.11–3.14
+  # 本项目只在 Windows 上用；3.11–3.13 只在这里实际跑过（开发机只有 3.14）。
+  test:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        # conftest.py 封死了网络、清空了 DFQ_* 环境变量：测试不会联网、拿不到任何真实密钥
+        run: python -m pytest -q -p no:cacheprovider
+
+  # ---------------------------------------------------------------- 静态检查
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: ruff (only real errors; rules in pyproject.toml)
+        run: python -m ruff check .
+      # Python 3.11 compatibility is exercised by the pytest matrix above.
+      - name: mypy (blocking, files that are already clean)
+        run: >-
+          python -m mypy --follow-imports=silent
+          dfq/envfile.py dfq/layout.py dfq/log.py dfq/timeutil.py dfq/http.py dfq/config.py
+          scripts/scan_secrets.py scripts/dfq_gui_entry.py
+      - name: mypy (whole package, report only)
+        # 现有代码还有几十处类型标注缺口，先只报告、不让 CI 失败；补齐后去掉 continue-on-error
+        continue-on-error: true
+        run: python -m mypy dfq
+
+  # ---------------------------------------------------------------- 依赖安全扫描
+  audit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: pip-audit (known vulnerabilities in runtime dependencies)
+        run: |
+          python -m pip install "pip-audit>=2.7"
+          python -m pip_audit -r requirements.txt --progress-spinner off
+
+  # ---------------------------------------------------------------- 敏感信息扫描：当前文件 + 完整 Git 历史
+  secrets:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 完整历史（所有分支和标签），--history 才能看到所有提交
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: scan_secrets.py --tree --history (output is masked)
+        run: python scripts/scan_secrets.py --tree --history --json scan-repo.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scan-repo
+          path: scan-repo.json
+
+  # ---------------------------------------------------------------- 构建安装包并验收
+  installer:
+    runs-on: windows-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Locate Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $candidates = @('C:\Program Files\Inno Setup 6\ISCC.exe','C:\Program Files (x86)\Inno Setup 6\ISCC.exe')
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+          if (-not $iscc) { throw 'ISCC.exe not found after install' }
+          Write-Output "Inno Setup compiler found at $iscc"
+          "DFQ_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build program folder and installer
+        shell: cmd
+        env:
+          CI: "true"
+          DFQ_REQUIRE_INSTALLER: "1"
+        run: scripts\build_exe.bat
+      - name: Scan the program folder for secrets and personal files
+        run: python scripts/scan_secrets.py --dir dist/DFQ --json scan-dist.json
+      - name: Acceptance test (no desktop session, so window items are SKIP)
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist -Filter "DFQ-Setup-*.exe" | Select-Object -First 1).FullName
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_test.ps1 -Setup $setup `
+            -Dir "$env:RUNNER_TEMP\dfq-release-test" -ScanScript scripts\scan_secrets.py -SkipGui
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-untested-build
+          path: |
+            dist/DFQ-Setup-*.exe
+            scan-dist.json
+          retention-days: 7
