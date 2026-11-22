@@ -94,17 +94,31 @@ jobs:
           Copy-Item release-test.txt, scan-repo.json, scan-dist.json release\
           Get-Content release\SHA256SUMS.txt
 
-      - name: Create a draft GitHub Release
+      # 构建记录、验收结果、扫描结果只留在这次工作流运行里（保留 90 天，维护者核对用），不附到 Release 上：
+      # 用户在 Release 页面只看到安装包一个文件。
+      - name: Keep the build record with the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-record-${{ github.ref_name }}
+          path: |
+            release/SHA256SUMS.txt
+            release/build-info.txt
+            release/release-test.txt
+            release/scan-repo.json
+            release/scan-dist.json
+          retention-days: 90
+
+      - name: Create a draft GitHub Release (installer only)
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
+          $setup = "DFQ-Setup-$env:DFQ_VERSION.exe"
+          $h = (Get-FileHash "release\$setup" -Algorithm SHA256).Hash.ToLower()
           $notes = @"
-          Windows installer for DFQ $env:DFQ_VERSION, built by GitHub Actions from commit ${{ github.sha }}.
+          DFQ $env:DFQ_VERSION 的 Windows 安装包，由 GitHub Actions 从提交 ${{ github.sha }} 自动构建。
 
-          Before installing, check the download against SHA256SUMS.txt (see docs/安装说明.md).
-          build-info.txt lists the exact build environment; release-test.txt and scan-*.json are the acceptance test and secret scan results.
+          安装前请核对校验值（方法见 docs/安装说明.md）：
+          SHA-256: $h
           "@
-          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "DFQ $env:DFQ_VERSION" --notes $notes `
-            "release\DFQ-Setup-$env:DFQ_VERSION.exe" release\SHA256SUMS.txt release\build-info.txt `
-            release\release-test.txt release\scan-repo.json release\scan-dist.json
+          gh release create "${{ github.ref_name }}" --draft --verify-tag --title "DFQ $env:DFQ_VERSION" --notes $notes "release\$setup"
